@@ -1,368 +1,138 @@
-# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-"""Example / benchmark for building a PTB LSTM model.
-
-Trains the model described in:
-(Zaremba, et. al.) Recurrent Neural Network Regularization
-http://arxiv.org/abs/1409.2329
-
-There are 3 supported model configurations:
-===========================================
-| config | epochs | train | valid  | test
-===========================================
-| small  | 13     | 37.99 | 121.39 | 115.91
-| medium | 39     | 48.45 |  86.16 |  82.07
-| large  | 55     | 37.87 |  82.62 |  78.29
-The exact results may vary depending on the random initialization.
-
-The hyperparameters used in the model:
-- init_scale - the initial scale of the weights
-- learning_rate - the initial value of the learning rate
-- max_grad_norm - the maximum permissible norm of the gradient
-- num_layers - the number of LSTM layers
-- num_steps - the number of unrolled steps of LSTM
-- hidden_size - the number of LSTM units
-- max_epoch - the number of epochs trained with the initial learning rate
-- max_max_epoch - the total number of epochs for training
-- keep_prob - the probability of keeping weights in the dropout layer
-- lr_decay - the decay of the learning rate for each epoch after "max_epoch"
-- batch_size - the batch size
-
-The data required for this example is in the data/ dir of the
-PTB dataset from Tomas Mikolov's webpage:
-
-$ wget http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
-$ tar xvf simple-examples.tgz
-
-To run:
-
-$ python ptb_word_lm.py --data_path=simple-examples/data/
-
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import time
-
-import encoder_decoder as enc
 import numpy as np
-import tensorflow as tf
+import theano
+import theano.tensor as T
 
-flags = tf.flags
-logging = tf.logging
+dtype = theano.config.floatX
+# squashing of the gates should result in values between 0 and 1
+# therefore we use the logistic function
+sigma = lambda x: 1 / (1 + T.exp(-x))
 
-flags.DEFINE_string(
-    "model", "small",
-    "A type of model. Possible options are: small, medium, large.")
-flags.DEFINE_string("xs", None,
-                    "Where the data Xs are stored.")
-flags.DEFINE_string("ys", None,
-                    "Where the data Ys are stored.")
-flags.DEFINE_string("save_path", None,
-                    "Model output directory.")
-flags.DEFINE_bool("use_fp16", False,
-                  "Train using 16-bit floats instead of 32bit floats")
-
-FLAGS = flags.FLAGS
+# for the other activation function we use the tanh
+act = T.tanh
 
 
-def data_type():
-    return tf.float16 if FLAGS.use_fp16 else tf.float32
+# sequences: x_t
+# prior results: h_tm1, c_tm1
+# non-sequences: W_xi, W_hi, W_ci, b_i, W_xf, W_hf, W_cf, b_f, W_xc, W_hc, b_c, W_xy, W_hy, W_cy, b_y
+def one_lstm_step(x_t, h_tm1, c_tm1, W_xi, W_hi, W_ci, b_i, W_xf, W_hf, W_cf, b_f, W_xc, W_hc, b_c, W_xy, W_ho, W_cy,
+                  b_o, W_hy, b_y):
+    i_t = sigma(theano.dot(x_t, W_xi) + theano.dot(h_tm1, W_hi) + theano.dot(c_tm1, W_ci) + b_i)
+    f_t = sigma(theano.dot(x_t, W_xf) + theano.dot(h_tm1, W_hf) + theano.dot(c_tm1, W_cf) + b_f)
+    c_t = f_t * c_tm1 + i_t * act(theano.dot(x_t, W_xc) + theano.dot(h_tm1, W_hc) + b_c)
+    o_t = sigma(theano.dot(x_t, W_xo) + theano.dot(h_tm1, W_ho) + theano.dot(c_t, W_co) + b_o)
+    h_t = o_t * act(c_t)
+    y_t = sigma(theano.dot(h_t, W_hy) + b_y)
+    return [h_t, c_t, y_t]
 
 
-class PTBModel(object):
-    """The PTB model."""
-
-    def __init__(self, is_training, config, input_):
-        self._input = input_
-
-        batch_size = input_.batch_size
-        num_steps = input_.num_steps
-        size = config.hidden_size
-        vocab_size = config.vocab_size
-
-        # Slightly better results can be obtained with forget gate biases
-        # initialized to 1 but the hyperparameters of the model would need to be
-        # different than reported in the paper.
-        lstm_cell = tf.nn.rnn_cell.BasicLSTMCell(size, forget_bias=0.0, state_is_tuple=True)
-
-        # (bitesandbytes): Not needed
-        if is_training and config.keep_prob < 1:
-            lstm_cell = tf.nn.rnn_cell.DropoutWrapper(
-                lstm_cell, output_keep_prob=config.keep_prob)
-
-        # (bitesandbytes) : Not needed
-        cell = tf.nn.rnn_cell.MultiRNNCell([lstm_cell] * config.num_layers, state_is_tuple=True)
-
-        self._initial_state = cell.zero_state(batch_size, data_type())
-
-        # (bitesandbytes) : Converting input data into embeddings; Implement this.
-        with tf.device("/cpu:0"):
-            embedding = tf.get_variable(
-                "embedding", [vocab_size, size], dtype=data_type())
-            inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
-
-        # (bitesandbytes) : Not needed
-        if is_training and config.keep_prob < 1:
-            inputs = tf.nn.dropout(inputs, config.keep_prob)
-
-        # Simplified version of tensorflow.models.rnn.rnn.py's rnn().
-        # This builds an unrolled LSTM for tutorial purposes only.
-        # In general, use the rnn() or state_saving_rnn() from rnn.py.
-        #
-        # The alternative version of the code below is:
-        #
-        # inputs = [tf.squeeze(input_step, [1])
-        #           for input_step in tf.split(1, num_steps, inputs)]
-        # outputs, state = tf.nn.rnn(cell, inputs, initial_state=self._initial_state)
-        outputs = []
-        state = self._initial_state
-        with tf.variable_scope("RNN"):
-            for time_step in range(num_steps):
-                if time_step > 0:
-                    tf.get_variable_scope().reuse_variables()
-                (cell_output, state) = cell(inputs[:, time_step, :], state)
-                outputs.append(cell_output)
-
-        output = tf.reshape(tf.concat(1, outputs), [-1, size])
-        softmax_w = tf.get_variable(
-            "softmax_w", [size, vocab_size], dtype=data_type())
-        softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
-        logits = tf.matmul(output, softmax_w) + softmax_b
-        loss = tf.nn.seq2seq.sequence_loss_by_example(
-            [logits],
-            [tf.reshape(input_.targets, [-1])],
-            [tf.ones([batch_size * num_steps], dtype=data_type())])
-        self._cost = cost = tf.reduce_sum(loss) / batch_size
-        self._final_state = state
-
-        if not is_training:
-            return
-
-        self._lr = tf.Variable(0.0, trainable=False)
-        tvars = tf.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars),
-                                          config.max_grad_norm)
-        optimizer = tf.train.GradientDescentOptimizer(self._lr)
-        self._train_op = optimizer.apply_gradients(
-            zip(grads, tvars),
-            global_step=tf.contrib.framework.get_or_create_global_step())
-
-        self._new_lr = tf.placeholder(
-            tf.float32, shape=[], name="new_learning_rate")
-        self._lr_update = tf.assign(self._lr, self._new_lr)
-
-    def assign_lr(self, session, lr_value):
-        session.run(self._lr_update, feed_dict={self._new_lr: lr_value})
-
-    @property
-    def input(self):
-        return self._input
-
-    @property
-    def initial_state(self):
-        return self._initial_state
-
-    @property
-    def cost(self):
-        return self._cost
-
-    @property
-    def final_state(self):
-        return self._final_state
-
-    @property
-    def lr(self):
-        return self._lr
-
-    @property
-    def train_op(self):
-        return self._train_op
+# TODO: Use a more appropriate initialization method
+def sample_weights(sizeX, sizeY):
+    values = np.ndarray([sizeX, sizeY], dtype=dtype)
+    for dx in xrange(sizeX):
+        vals = np.random.uniform(low=-1., high=1., size=(sizeY,))
+        # vals_norm = np.sqrt((vals**2).sum())
+        # vals = vals / vals_norm
+        values[dx, :] = vals
+    _, svs, _ = np.linalg.svd(values)
+    # svs[0] is the largest singular value
+    values = values / svs[0]
+    return values
 
 
-class SmallConfig(object):
-    """Small config."""
-    init_scale = 0.1
-    learning_rate = 1.0
-    max_grad_norm = 5
-    num_layers = 2
-    num_steps = 20
-    hidden_size = 200
-    max_epoch = 4
-    max_max_epoch = 13
-    keep_prob = 1.0
-    lr_decay = 0.5
-    batch_size = 20
-    vocab_size = 10000
+n_in = 7  # for embedded reber grammar
+n_hidden = n_i = n_c = n_o = n_f = 10
+n_y = 7  # for embedded reber grammar
+
+# initialize weights
+# i_t and o_t should be "open" or "closed"
+# f_t should be "open" (don't forget at the beginning of training)
+# we try to archive this by appropriate initialization of the corresponding biases
+
+W_xi = theano.shared(sample_weights(n_in, n_i))
+W_hi = theano.shared(sample_weights(n_hidden, n_i))
+W_ci = theano.shared(sample_weights(n_c, n_i))
+b_i = theano.shared(np.cast[dtype](np.random.uniform(-0.5, .5, size=n_i)))
+W_xf = theano.shared(sample_weights(n_in, n_f))
+W_hf = theano.shared(sample_weights(n_hidden, n_f))
+W_cf = theano.shared(sample_weights(n_c, n_f))
+b_f = theano.shared(np.cast[dtype](np.random.uniform(0, 1., size=n_f)))
+W_xc = theano.shared(sample_weights(n_in, n_c))
+W_hc = theano.shared(sample_weights(n_hidden, n_c))
+b_c = theano.shared(np.zeros(n_c, dtype=dtype))
+W_xo = theano.shared(sample_weights(n_in, n_o))
+W_ho = theano.shared(sample_weights(n_hidden, n_o))
+W_co = theano.shared(sample_weights(n_c, n_o))
+b_o = theano.shared(np.cast[dtype](np.random.uniform(-0.5, .5, size=n_o)))
+W_hy = theano.shared(sample_weights(n_hidden, n_y))
+b_y = theano.shared(np.zeros(n_y, dtype=dtype))
+
+c0 = theano.shared(np.zeros(n_hidden, dtype=dtype))
+h0 = T.tanh(c0)
+
+params = [W_xi, W_hi, W_ci, b_i, W_xf, W_hf, W_cf, b_f, W_xc, W_hc, b_c, W_xo, W_ho, W_co, b_o, W_hy, b_y, c0]
+# first dimension is time
+
+# input
+v = T.matrix(dtype=dtype)
+
+# target
+target = T.matrix(dtype=dtype)
+# hidden and outputs of the entire sequence
+[h_vals, _, y_vals], _ = theano.scan(fn=one_lstm_step,
+                                     sequences=dict(input=v, taps=[0]),
+                                     outputs_info=[h0, c0, None],  # corresponds to return type of fn
+                                     non_sequences=[W_xi, W_hi, W_ci, b_i, W_xf, W_hf, W_cf, b_f, W_xc, W_hc, b_c, W_xo,
+                                                    W_ho, W_co, b_o, W_hy, b_y])
+
+cost = -T.mean(target * T.log(y_vals) + (1. - target) * T.log(1. - y_vals))
+# learning rate
+lr = np.cast[dtype](.1)
+learning_rate = theano.shared(lr)
+gparams = []
+for param in params:
+    gparam = T.grad(cost, param)
+    gparams.append(gparam)
+
+updates = []
+for param, gparam in zip(params, gparams):
+    updates.append((param, param - gparam * learning_rate))
+
+# TODO(bitesandbytes) : Add imports here
+import reberGrammar
+
+train_data = reberGrammar.get_n_embedded_examples(1000)
+learn_rnn_fn = theano.function(inputs=[v, target],
+                               outputs=cost,
+                               updates=updates)
+
+nb_epochs = 250
+train_errors = np.ndarray(nb_epochs)
 
 
-class MediumConfig(object):
-    """Medium config."""
-    init_scale = 0.05
-    learning_rate = 1.0
-    max_grad_norm = 5
-    num_layers = 2
-    num_steps = 35
-    hidden_size = 650
-    max_epoch = 6
-    max_max_epoch = 39
-    keep_prob = 0.5
-    lr_decay = 0.8
-    batch_size = 20
-    vocab_size = 10000
+def train_rnn(train_data):
+    for x in range(nb_epochs):
+        error = 0.
+        for j in range(len(train_data)):
+            index = np.random.randint(0, len(train_data))
+            i, o = train_data[index]
+            train_cost = learn_rnn_fn(i, o)
+            error += train_cost
+        train_errors[x] = error
 
 
-class LargeConfig(object):
-    """Large config."""
-    init_scale = 0.04
-    learning_rate = 1.0
-    max_grad_norm = 10
-    num_layers = 2
-    num_steps = 35
-    hidden_size = 1500
-    max_epoch = 14
-    max_max_epoch = 55
-    keep_prob = 0.35
-    lr_decay = 1 / 1.15
-    batch_size = 20
-    vocab_size = 10000
+train_rnn(train_data)
+
+predictions = theano.function(inputs=[v], outputs=y_vals)
+
+test_data = reberGrammar.get_n_embedded_examples(10)
 
 
-class TestConfig(object):
-    """Tiny config, for testing."""
-    init_scale = 0.1
-    learning_rate = 1.0
-    max_grad_norm = 1
-    num_layers = 1
-    num_steps = 5
-    hidden_size = 2
-    max_epoch = 1
-    max_max_epoch = 1
-    keep_prob = 1.0
-    lr_decay = 0.5
-    batch_size = 10
-    vocab_size = 20
+def print_out(test_data):
+    for i, o in test_data:
+        p = predictions(i)
+        print o[-2]  # target
+        print p[-2]  # prediction
+        print
 
 
-def run_epoch(session, model, eval_op=None, verbose=False):
-    """Runs the model on the given data."""
-    start_time = time.time()
-    costs = 0.0
-    iters = 0
-    state = session.run(model.initial_state)
-
-    fetches = {
-        "cost": model.cost,
-        "final_state": model.final_state,
-    }
-    if eval_op is not None:
-        fetches["eval_op"] = eval_op
-
-    for step in range(model.input.epoch_size):
-        feed_dict = {}
-        for i, (c, h) in enumerate(model.initial_state):
-            feed_dict[c] = state[i].c
-            feed_dict[h] = state[i].h
-
-        vals = session.run(fetches, feed_dict)
-        cost = vals["cost"]
-        state = vals["final_state"]
-
-        costs += cost
-        iters += model.input.num_steps
-
-        if verbose and step % (model.input.epoch_size // 10) == 10:
-            print("%.3f perplexity: %.3f speed: %.0f wps" %
-                  (step * 1.0 / model.input.epoch_size, np.exp(costs / iters),
-                   iters * model.input.batch_size / (time.time() - start_time)))
-
-    return np.exp(costs / iters)
-
-
-def get_config():
-    # TODO : Remove this.
-    return TestConfig()
-
-    if FLAGS.model == "small":
-        return SmallConfig()
-    elif FLAGS.model == "medium":
-        return MediumConfig()
-    elif FLAGS.model == "large":
-        return LargeConfig()
-    elif FLAGS.model == "test":
-        return TestConfig()
-    else:
-        raise ValueError("Invalid model: %s", FLAGS.model)
-
-
-def main(_):
-    if not FLAGS.data_path:
-        raise ValueError("Must set --data_path to PTB data directory")
-
-    train_data, valid_data, test_data = enc.get_raw_data(FLAGS.xs, FLAGS.ys)
-
-    config = get_config()
-    eval_config = get_config()
-    eval_config.batch_size = 1
-    eval_config.num_steps = 1
-
-    with tf.Graph().as_default():
-        initializer = tf.random_uniform_initializer(-config.init_scale,
-                                                    config.init_scale)
-
-        with tf.name_scope("Train"):
-            train_input = PTBInput(config=config, data=train_data, name="TrainInput")
-            with tf.variable_scope("Model", reuse=None, initializer=initializer):
-                m = PTBModel(is_training=True, config=config, input_=train_input)
-            tf.scalar_summary("Training Loss", m.cost)
-            tf.scalar_summary("Learning Rate", m.lr)
-
-        with tf.name_scope("Valid"):
-            valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
-            with tf.variable_scope("Model", reuse=True, initializer=initializer):
-                mvalid = PTBModel(is_training=False, config=config, input_=valid_input)
-            tf.scalar_summary("Validation Loss", mvalid.cost)
-
-        with tf.name_scope("Test"):
-            test_input = PTBInput(config=eval_config, data=test_data, name="TestInput")
-            with tf.variable_scope("Model", reuse=True, initializer=initializer):
-                mtest = PTBModel(is_training=False, config=eval_config,
-                                 input_=test_input)
-
-        sv = tf.train.Supervisor(logdir=FLAGS.save_path)
-        with sv.managed_session() as session:
-            for i in range(config.max_max_epoch):
-                lr_decay = config.lr_decay ** max(i + 1 - config.max_epoch, 0.0)
-                m.assign_lr(session, config.learning_rate * lr_decay)
-
-                print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
-                train_perplexity = run_epoch(session, m, eval_op=m.train_op,
-                                             verbose=True)
-                print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
-                valid_perplexity = run_epoch(session, mvalid)
-                print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
-
-            test_perplexity = run_epoch(session, mtest)
-            print("Test Perplexity: %.3f" % test_perplexity)
-
-            if FLAGS.save_path:
-                print("Saving model to %s." % FLAGS.save_path)
-                sv.saver.save(session, FLAGS.save_path, global_step=sv.global_step)
-
-
-if __name__ == "__main__":
-    tf.app.run()
+print_out(test_data)

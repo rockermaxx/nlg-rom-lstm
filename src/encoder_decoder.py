@@ -23,7 +23,7 @@ def build_vocab(filename):
     count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
 
     words, _ = list(zip(*count_pairs))
-    word_to_id = dict(zip(words, range(len(words))))
+    word_to_id = dict(zip(words, range(1, len(words) + 1)))
 
     return word_to_id
 
