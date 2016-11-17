@@ -93,9 +93,9 @@ def init_params(options):
 
     # TODO(biteandbytes) : params['Wemb'] is not required anymore. Remove ?
     # embedding
-    randn = numpy.random.rand(options['n_words'],
-                              options['dim_proj'])
-    params['Wemb'] = (0.01 * randn).astype(config.floatX)
+    # randn = numpy.random.rand(options['n_words'],
+    #                          options['dim_proj'])
+    # params['Wemb'] = (0.01 * randn).astype(config.floatX)
     params = get_layer(options['encoder'])[0](options,
                                               params,
                                               prefix=options['encoder'])
@@ -205,6 +205,8 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
         return h, c
 
+    # No idea why this is here. :/
+    # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
                    tparams[_p(prefix, 'b')])
 
@@ -392,11 +394,12 @@ def build_model(tparams, options):
     n_samples = x.shape[1]
 
     # TODO(biteandbytes) : This gets inputs. Change to n_timesteps*n_samples*3 tensor
-    emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
-                                                n_samples,
-                                                options['dim_proj']])
+    # emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
+    #                                            n_samples,
+    #                                            options['dim_proj']])
+    #
 
-    proj = get_layer(options['encoder'])[1](tparams, emb, options,
+    proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
                                             mask=mask)
     # TODO(biteandbytes) : Modify this ?
@@ -406,19 +409,19 @@ def build_model(tparams, options):
     if options['use_dropout']:
         proj = dropout_layer(proj, use_noise, trng)
 
-    # Dims :
+    # TODO(saipraveenb, akshay-balaji, rockermaxx) : Needs to be changed
+    # Dims : proj : HxNxT (?), tparams['U'] : |V|xH, tparams['b'] : |V|x1
     pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
 
-    # TODO(biteandbytes) : Not using predictions anyway. Remove this ?
     f_pred = theano.function([x, mask], pred.argmax(axis=1), name='f_pred')
 
     off = 1e-8
     if pred.dtype == 'float16':
         off = 1e-6
 
-    # TODO(bitesandbytes) : Add mask here. Also change the cost function?
+    # TODO(bitesandbytes, saipraveenb) : Add mask here. Also change the cost function?
     cost = -tensor.log(pred[tensor.arange(n_samples), y] + off).mean()
 
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
