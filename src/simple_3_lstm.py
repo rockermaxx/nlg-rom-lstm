@@ -363,17 +363,16 @@ def rmsprop(lr, tparams, grads, x, mask, y, cost):
     return f_grad_shared, f_update
 
 
-# TODO(bitesandbytes) : Change masks to associate with Ys instead of Xs
 def build_model(tparams, options):
     trng = RandomStreams(SEED)
 
     # Used for dropout.
     use_noise = theano.shared(numpy_floatX(0.))
 
-    # TODO(bitesandbytes) : Change x to floatX, y to matrix of int64
-    x = tensor.matrix('x', dtype='int64')
+    # TODO(bitesandbytes) : Change x to floatX, y to matrix of int64 ?
+    x = tensor.tensor3('x', dtype=config.floatX)
     mask = tensor.matrix('mask', dtype=config.floatX)
-    y = tensor.vector('y', dtype='int64')
+    y = tensor.matrix('y', dtype='int64')
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
@@ -391,11 +390,11 @@ def build_model(tparams, options):
     if options['use_dropout']:
         proj = dropout_layer(proj, use_noise, trng)
 
+    # TODO(bitesandbytes) :Change this ?
     pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
 
-    # TODO(bitesandbytes) : Not required; remove ?
     f_pred = theano.function([x, mask], pred.argmax(axis=1), name='f_pred')
 
     off = 1e-8
@@ -458,7 +457,7 @@ def train_lstm(
         dispFreq=10,  # Display to stdout the training progress every N updates
         decay_c=0.,  # Weight decay for the classifier applied to the U weights.
         lrate=0.0001,  # Learning rate for sgd (not used for adadelta and rmsprop)
-        n_words=10000,  # Vocabulary size
+        n_words=22,  # Vocabulary size
         optimizer=adadelta,
         # sgd, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and decaying learning rate).
         encoder='lstm',  # TODO: can be removed must be lstm.
@@ -481,12 +480,15 @@ def train_lstm(
     model_options = locals().copy()
     print("model options", model_options)
 
-    load_data, prepare_data = get_dataset(dataset)
-
     print('Loading data')
-    # Nx([x],[y])
+
+    # (Nx[x], N*[y])
     train, valid, test = encoder_decoder.get_raw_data("/home/sauce/git/upgraded-system/data/xs1000.txt",
                                                       "/home/sauce/git/upgraded-system/data/targets1000.txt")
+
+    # Input - seqs: num_samples*3, labels: num_samples*[list]
+    # Return X:maxlen*num_samples*3, X_mask: max_len*num_samples, labels: maxlen*num_samples
+    prepare_data = encoder_decoder.prepare_data
 
     # Chosen as |num words| + 1 (0 -> no word | empty)
     ydim = 22
@@ -598,18 +600,14 @@ def train_lstm(
 
                     history_errs.append([valid_err, test_err])
 
-                    if (best_p is None or
-                                valid_err <= numpy.array(history_errs)[:,
-                                             0].min()):
+                    if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
                         best_p = unzip(tparams)
                         bad_counter = 0
 
                     print('Train ', train_err, 'Valid ', valid_err,
                           'Test ', test_err)
 
-                    if (len(history_errs) > patience and
-                                valid_err >= numpy.array(history_errs)[:-patience,
-                                             0].min()):
+                    if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
                         bad_counter += 1
                         if bad_counter > patience:
                             print('Early Stop!')
