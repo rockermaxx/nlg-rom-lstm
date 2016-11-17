@@ -95,15 +95,10 @@ def init_params(options):
     Global (not LSTM) parameter. For the embedding and the classifier.
     """
     params = OrderedDict()
-    # embedding
-    randn = numpy.random.rand(options['n_words'],
-                              options['dim_proj'])
-    params['Wemb'] = (0.01 * randn).astype(config.floatX)
     params = get_layer(options['encoder'])[0](options,
                                               params,
                                               prefix=options['encoder'])
     # classifier
-    # TODO(bitesandbytes) : Change 'ydim' to |num words| + 1
     params['U'] = 0.01 * numpy.random.randn(options['dim_proj'],
                                             options['ydim']).astype(config.floatX)
     params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
@@ -192,6 +187,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
         return h, c
 
+    # Donno what this is doing :/
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
                    tparams[_p(prefix, 'b')])
 
@@ -381,10 +377,7 @@ def build_model(tparams, options):
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
-    emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
-                                                n_samples,
-                                                options['dim_proj']])
-    proj = get_layer(options['encoder'])[1](tparams, emb, options,
+    proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
                                             mask=mask)
     if options['encoder'] == 'lstm':
@@ -393,7 +386,7 @@ def build_model(tparams, options):
     if options['use_dropout']:
         proj = dropout_layer(proj, use_noise, trng)
 
-    pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
+    pred = tensor.nnet.softmax(tensor.dot(proj.T, tparams['U']) + tparams['b'])
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
     f_pred = theano.function([x, mask], pred.argmax(axis=1), name='f_pred')

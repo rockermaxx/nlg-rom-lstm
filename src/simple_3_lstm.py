@@ -100,8 +100,7 @@ def init_params(options):
                                               params,
                                               prefix=options['encoder'])
     # classifier
-    params['U'] = 0.01 * numpy.random.randn(options['dim_proj'],
-                                            options['ydim']).astype(config.floatX)
+    params['U'] = 0.01 * numpy.random.randn(options['ydim'], options['dim_proj']).astype(config.floatX)
     params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
 
     return params
@@ -141,18 +140,19 @@ def param_init_lstm(options, params, prefix='lstm'):
 
     :see: init_params
     """
-    W = numpy.concatenate([ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj'])], axis=1)
-    params[_p(prefix, 'W')] = W
-    U = numpy.concatenate([ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj'])], axis=1)
-    params[_p(prefix, 'U')] = U
-    b = numpy.zeros((4 * options['dim_proj'],))
-    params[_p(prefix, 'b')] = b.astype(config.floatX)
+    # Weight matrices
+    # Hidden state of dims |H|
+    # Input state of dims 3
+    # Cell state of dims |H|
+    # 4 matrices of size |H|*|H+X_dim|
+    weight = numpy.random.rand(4, options['dim_proj'], options['dim_proj'] + 3)
+
+    # Bias vectors of length |H|
+    # 4 for each of the above matrices
+    bias = numpy.random.rand(4, options['dim_proj'])
+
+    params['weight'] = weight
+    params['bias'] = bias.astype(config.floatX)
 
     return params
 
@@ -166,46 +166,56 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
     assert mask is not None
 
+    # NOT USED, REMOVE ?
     def _slice(_x, n, dim):
         if _x.ndim == 3:
             return _x[:, :, n * dim:(n + 1) * dim]
         return _x[:, n * dim:(n + 1) * dim]
 
+    # Dims
+    # m_ : 1xN
+    # x_ : 3xN
+    # h_ : HxN
+    # c_ : HxN
     def _step(m_, x_, h_, c_):
-        # TODO(bitesandbytes) :
-        # This seems wrong : Input should be concatenated before calling tensor.dot ?
-        # Also, no biases are added at any point, other than the last computation.
-        preact = tensor.dot(h_, tparams[_p(prefix, 'U')])
-        preact += x_
+        # Concat x_ and h_ to get (H+3)xN matrix
+        ip_mat = tensor.concatenate([x_, h_], axis=0)
 
-        i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim_proj']))
-        f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim_proj']))
-        o = tensor.nnet.sigmoid(_slice(preact, 2, options['dim_proj']))
-        c = tensor.tanh(_slice(preact, 3, options['dim_proj']))
+        # Compute forget gate values
+        # f : HxN matrix
+        f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
-        c = f * c_ + i * c
-        c = m_[:, None] * c + (1. - m_)[:, None] * c_
+        # Compute input gate values
+        # i : HxN matrix
+        i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
+        c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
-        h = o * tensor.tanh(c)
-        h = m_[:, None] * h + (1. - m_)[:, None] * h_
+        # Compute new memory
+        # c : HxN
+        c = i * c_new + f * c_
+        # Retain based on mask
+        c = m_[None, :] * c + (1. - m_)[None, :] * c_
+
+        # Compute new hidden state
+        # h : HxN
+        h = tensor.nnet.sigmoid(
+            tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
+        # Retain based on mask
+        h = m_[None, :] * h + (1. - m_)[None, :] * h_
 
         return h, c
 
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
                    tparams[_p(prefix, 'b')])
 
+    # TODO(saipraveenb) : Can you fix this scan function ?
     dim_proj = options['dim_proj']
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
-                                outputs_info=[tensor.alloc(numpy_floatX(0.),
-                                                           n_samples,
-                                                           dim_proj),
-                                              tensor.alloc(numpy_floatX(0.),
-                                                           n_samples,
-                                                           dim_proj)],
+                                outputs_info=[tensor.alloc(numpy_floatX(0.), dim_proj, n_samples),
+                                              tensor.alloc(numpy_floatX(0.), dim_proj, n_samples)],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
-    # TODO(biteandbytes) : Modify to return all rval ?
     return rval[0]
 
 
@@ -396,7 +406,7 @@ def build_model(tparams, options):
     if options['use_dropout']:
         proj = dropout_layer(proj, use_noise, trng)
 
-    # TODO(bitesandbytes) :Change this i.e. now do tensor.dot between multiple 'proj' per 'x' sequence
+    # Dims :
     pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
