@@ -9,12 +9,13 @@ import sys
 import time
 from collections import OrderedDict
 
-import imdb
 import numpy
 import theano
 import theano.tensor as tensor
 from theano import config
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+
+import imdb
 
 datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -27,6 +28,7 @@ def numpy_floatX(data):
     return numpy.asarray(data, dtype=config.floatX)
 
 
+# NOTE (bitesandbytes) : Important; set minibatch_size = 1 ?
 def get_minibatches_idx(n, minibatch_size, shuffle=False):
     """
     Used to shuffle the dataset at each iteration.
@@ -51,6 +53,7 @@ def get_minibatches_idx(n, minibatch_size, shuffle=False):
     return zip(range(len(minibatches)), minibatches)
 
 
+# NOTE (bitesandbytes) : Not needed.
 def get_dataset(name):
     return datasets[name][0], datasets[name][1]
 
@@ -89,7 +92,7 @@ def _p(pp, name):
 
 def init_params(options):
     """
-    Global (not LSTM) parameter. For the embeding and the classifier.
+    Global (not LSTM) parameter. For the embedding and the classifier.
     """
     params = OrderedDict()
     # embedding
@@ -100,6 +103,7 @@ def init_params(options):
                                               params,
                                               prefix=options['encoder'])
     # classifier
+    # TODO(bitesandbytes) : Change 'ydim' to |num words| + 1
     params['U'] = 0.01 * numpy.random.randn(options['dim_proj'],
                                             options['ydim']).astype(config.floatX)
     params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
@@ -491,6 +495,7 @@ def train_lstm(
 
     ydim = numpy.max(train[1]) + 1
 
+    # TOOD(bitesandbytes) : Change ydim to |num words| + 1 (0 -> no word | empty)
     model_options['ydim'] = ydim
 
     print('Building model')
