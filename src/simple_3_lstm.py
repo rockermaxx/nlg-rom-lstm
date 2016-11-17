@@ -90,6 +90,8 @@ def init_params(options):
     Global (not LSTM) parameter. For the embedding and the classifier.
     """
     params = OrderedDict()
+
+    # TODO(biteandbytes) : params['Wemb'] is not required anymore. Remove ?
     # embedding
     randn = numpy.random.rand(options['n_words'],
                               options['dim_proj'])
@@ -170,6 +172,9 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         return _x[:, n * dim:(n + 1) * dim]
 
     def _step(m_, x_, h_, c_):
+        # TODO(bitesandbytes) :
+        # This seems wrong : Input should be concatenated before calling tensor.dot ?
+        # Also, no biases are added at any point, other than the last computation.
         preact = tensor.dot(h_, tparams[_p(prefix, 'U')])
         preact += x_
 
@@ -189,7 +194,6 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
                    tparams[_p(prefix, 'b')])
 
-    # TODO(bitesandytes) : Remove mask from sequences?
     dim_proj = options['dim_proj']
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
@@ -201,6 +205,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
                                                            dim_proj)],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
+    # TODO(biteandbytes) : Modify to return all rval ?
     return rval[0]
 
 
@@ -369,7 +374,6 @@ def build_model(tparams, options):
     # Used for dropout.
     use_noise = theano.shared(numpy_floatX(0.))
 
-    # TODO(bitesandbytes) : Change x to floatX, y to matrix of int64 ?
     x = tensor.tensor3('x', dtype=config.floatX)
     mask = tensor.matrix('mask', dtype=config.floatX)
     y = tensor.matrix('y', dtype='int64')
@@ -377,24 +381,27 @@ def build_model(tparams, options):
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
+    # TODO(biteandbytes) : This gets inputs. Change to n_timesteps*n_samples*3 tensor
     emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
                                                 n_samples,
                                                 options['dim_proj']])
+
     proj = get_layer(options['encoder'])[1](tparams, emb, options,
                                             prefix=options['encoder'],
                                             mask=mask)
-    # TODO(biteandbytes) : Remove mask from these ?
+    # TODO(biteandbytes) : Modify this ?
     if options['encoder'] == 'lstm':
         proj = (proj * mask[:, :, None]).sum(axis=0)
         proj = proj / mask.sum(axis=0)[:, None]
     if options['use_dropout']:
         proj = dropout_layer(proj, use_noise, trng)
 
-    # TODO(bitesandbytes) :Change this ?
+    # TODO(bitesandbytes) :Change this i.e. now do tensor.dot between multiple 'proj' per 'x' sequence
     pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
 
+    # TODO(biteandbytes) : Not using predictions anyway. Remove this ?
     f_pred = theano.function([x, mask], pred.argmax(axis=1), name='f_pred')
 
     off = 1e-8
@@ -407,7 +414,6 @@ def build_model(tparams, options):
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
 
-# TODO(bitesandbytes) : NOT USED; Remove
 def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     """ If you want to use a trained model, this is useful to compute
     the probabilities of new examples.
@@ -482,7 +488,7 @@ def train_lstm(
 
     print('Loading data')
 
-    # (Nx[x], N*[y])
+    # (N*[x], N*[y])
     train, valid, test = encoder_decoder.get_raw_data("/home/sauce/git/upgraded-system/data/xs1000.txt",
                                                       "/home/sauce/git/upgraded-system/data/targets1000.txt")
 
