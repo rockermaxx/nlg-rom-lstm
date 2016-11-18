@@ -513,8 +513,8 @@ def train_lstm(
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
         ydim=22, # Output dimensions.
-        w_multiplier=0.2,
-        b_multiplier=0.05,
+        w_multiplier=1,
+        b_multiplier=1,
 ):
     # Model options
     model_options = locals().copy()
@@ -523,8 +523,8 @@ def train_lstm(
     print('Loading data')
 
     # (N*[x], N*[y])
-    train, valid, test = encoder_decoder.get_raw_data("/home/sauce/git/upgraded-system/data/xs1000.txt",
-                                                      "/home/sauce/git/upgraded-system/data/targets1000.txt")
+    train, valid, test = encoder_decoder.get_raw_data("../data/xs1000.txt",
+                                                      "../data/targets1000.txt")
 
     # Input - seqs: num_samples*3, labels: num_samples*[list]
     # Return X:maxlen*num_samples*3, X_mask: max_len*num_samples, labels: maxlen*num_samples
