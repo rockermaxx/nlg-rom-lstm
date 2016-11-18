@@ -146,11 +146,11 @@ def param_init_lstm(options, params, prefix='lstm'):
     # Cell state of dims |H|
     # 4 matrices of size |H|*|H+X_dim|
     # TODO: Better if orthogonal?
-    weight = numpy.random.rand(4, options['dim_proj'], options['dim_proj'] + 3) * options['w_multiplier'];
+    weight = 0.01 * numpy.random.randn( 4, options['dim_proj'], options['dim_proj'] + 3 );
 
     # Bias vectors of length |H|
     # 4 for each of the above matrices
-    bias = numpy.random.rand(4, options['dim_proj']) * options['b_multiplier'];
+    bias = numpy.zeros(( 4, options['dim_proj'] ));
 
     params['weight'] = weight
     params['bias'] = bias.astype(config.floatX)
@@ -182,6 +182,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     # c_ : NxH
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
     # of the code is N major.
+    # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
     def _step(m_, x_, h_, c_):
         # Concat x_ and h_ to get Nx(H+3) matrix
         ip_mat = tensor.concatenate([x_, h_], axis=1 )
@@ -194,11 +195,11 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
         # Compute input gate values
         # i : NxH matrix
-        i = tensor.nnet.sigmoid(tensor.tensordot(ip_mat, tparams['weight'][1]) + tparams['bias'][1, :][None, :])
+        i = tensor.nnet.sigmoid(tensor.tensordot(ip_mat, tparams['weight'][1], axes=[1,1]) + tparams['bias'][1, :][None, :])
         #i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
 
         #c_new : NxH matrix
-        c_new = tensor.tanh(tensor.tensordot(ip_mat, tparams['weight'][2]) + tparams['bias'][2, :][None, :])
+        c_new = tensor.tanh(tensor.tensordot(ip_mat, tparams['weight'][2], axes=[1,1]) + tparams['bias'][2, :][None, :])
         #c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
@@ -210,7 +211,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         # Compute new hidden state
         # h : NxH
         h = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][3]) + tparams['bias'][3, :][None, :]) * tensor.tanh(c)
+            tensor.tensordot(ip_mat, tparams['weight'][3], axes=[1,1]) + tparams['bias'][3, :][None, :]) * tensor.tanh(c)
         #h = tensor.nnet.sigmoid(
         #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
         # Retain based on mask
@@ -221,15 +222,16 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     # No idea why this is here. :/
     # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
     # NOTE: These are the inputs X. It is called state_below to allow for stacking multiple LSTMs on top of each other.
-    state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
-                   tparams[_p(prefix, 'b')])
+    # And yes.. not needed anymore. This was the original Wx computation.
+    #state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
+    #               tparams[_p(prefix, 'b')])
 
     # TODO(saipraveenb) : Can you fix this scan function ?
     dim_proj = options['dim_proj']
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
-                                outputs_info=[tensor.alloc(numpy_floatX(0.), dim_proj, n_samples),
-                                              tensor.alloc(numpy_floatX(0.), dim_proj, n_samples)],
+                                outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
+                                              tensor.alloc(numpy_floatX(0.), n_samples, dim_proj)],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
     return rval[0]
@@ -416,21 +418,23 @@ def build_model(tparams, options):
     #                                            options['dim_proj']])
     #
 
-    # TxHxN for some reason.
+    # TxNxH.
     proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
                                             mask=mask)
     # TODO(biteandbytes) : Modify this ?
-    # tparams[U] = HxO
+    # tparams[U] = HxO # WRONG. It's _'OxH'_
     # O = output one hot vector.
     # H = Hidden state size.
+    # NOTE: IT'S 'OxH' NOT 'HxO'. DON'T MENTION THINGS YOU ARE NOT
+    # SURE ABOUT! I JUST WASTED AN HOUR.
     if options['encoder'] == 'lstm':
         #proj = (proj * mask[:, :, None]).sum(axis=0)
         #proj = proj / mask.sum(axis=0)[:, None]
         # B = O
 
-        # TxNxO, for some reason.
-        proj = tensor.tensordot( proj, tparams['U'], axes=[1,0] ) + tparams['b'][None, None, :];
+        # TxNxO.
+        proj = tensor.tensordot( proj, tparams['U'], axes=[2,1] ) + tparams['b'][None, None, :];
 
     # TODO(saipraveenb): Check if we need dropout option.
     #if options['use_dropout']:
@@ -438,7 +442,7 @@ def build_model(tparams, options):
 
     # pred = TxNxO
     #pred = tensor.nnet.softmax( proj );
-    exp_pred = tensor.exp( pred );
+    exp_pred = tensor.exp( proj );
     # TxNxO ( last dimension softmaxed )
     pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
@@ -451,7 +455,7 @@ def build_model(tparams, options):
         off = 1e-6
 
     # NOTE: Finished adding the softmax layer with mask.
-    cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[0])[None,:], y ] * mask + off ).mean()
+    cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], y ] * mask + off ).mean()
 
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
@@ -518,7 +522,7 @@ def train_lstm(
         dataset='imdb',
         # Parameter for extra option
         noise_std=0.,
-        use_dropout=True,  # if False slightly faster, but worst test error
+        use_dropout=False,  # if False slightly faster, but worst test error
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
@@ -625,7 +629,7 @@ def train_lstm(
                 x, mask, y = prepare_data(x, y)
                 n_samples += x.shape[1]
 
-                cost = f_grad_shared(x, mask, y)
+                cost = f_grad_shared(x, mask, y.astype(numpy.int64))
                 f_update(lrate)
 
                 if numpy.isnan(cost) or numpy.isinf(cost):

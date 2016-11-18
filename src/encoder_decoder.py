@@ -88,12 +88,12 @@ def prepare_data(seqs, labels, maxlen=None):
         maxlen = 40
 
     # Pad and compute masks
-    ret_X = numpy.zeros((maxlen, len(seqs), 3))
-    mask_X = numpy.zeros((maxlen, len(seqs)))
-    labels_X = numpy.zeros((maxlen, len(seqs)))
+    ret_X = np.zeros((maxlen, len(seqs), 3))
+    mask_X = np.zeros((maxlen, len(seqs)))
+    labels_X = np.zeros((maxlen, len(seqs)))
     for k in range(len(seqs)):
         mask_X[:len(labels[k]), k] = 1
-        ret_X[:len(labels[k]), k] = numpy.asarray(seqs[k])
+        ret_X[:len(labels[k]), k] = np.asarray(seqs[k])
         labels_X[:len(labels[k]), k] = labels[k]
 
     return ret_X, mask_X, labels_X
