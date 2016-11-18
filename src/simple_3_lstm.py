@@ -174,37 +174,47 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         return _x[:, n * dim:(n + 1) * dim]
 
     # Dims
-    # m_ : 1xN
-    # x_ : 3xN
-    # h_ : HxN
-    # c_ : HxN
+    # m_ : N
+    # W  : Hx(H+3)
+    # B  : H
+    # x_ : Nx3
+    # h_ : NxH
+    # c_ : NxH
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
     # of the code is N major.
     def _step(m_, x_, h_, c_):
-        # Concat x_ and h_ to get (H+3)xN matrix
-        ip_mat = tensor.concatenate([x_, h_], axis=0)
+        # Concat x_ and h_ to get Nx(H+3) matrix
+        ip_mat = tensor.concatenate([x_, h_], axis=1 )
 
         # Compute forget gate values
-        # f : HxN matrix
-        f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
+        # f : NxH matrix
+        f = tensor.nnet.sigmoid(
+            tensor.tensordot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
+        #f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
         # Compute input gate values
-        # i : HxN matrix
-        i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
-        c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
+        # i : NxH matrix
+        i = tensor.nnet.sigmoid(tensor.tensordot(ip_mat, tparams['weight'][1]) + tparams['bias'][1, :][None, :])
+        #i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
+
+        #c_new : NxH matrix
+        c_new = tensor.tanh(tensor.tensordot(ip_mat, tparams['weight'][2]) + tparams['bias'][2, :][None, :])
+        #c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
-        # c : HxN
+        # c : NxH
         c = i * c_new + f * c_
         # Retain based on mask
-        c = m_[None, :] * c + (1. - m_)[None, :] * c_
+        c = m_[:, None] * c + (1. - m_)[:, None] * c_
 
         # Compute new hidden state
-        # h : HxN
+        # h : NxH
         h = tensor.nnet.sigmoid(
-            tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
+            tensor.tensordot(ip_mat, tparams['weight'][3]) + tparams['bias'][3, :][None, :]) * tensor.tanh(c)
+        #h = tensor.nnet.sigmoid(
+        #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
         # Retain based on mask
-        h = m_[None, :] * h + (1. - m_)[None, :] * h_
+        h = m_[:, None] * h + (1. - m_)[:, None] * h_
 
         return h, c
 
