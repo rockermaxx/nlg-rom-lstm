@@ -1,7 +1,7 @@
 import collections
 import csv
 import random
-
+import numpy as np
 import tensorflow as tf
 
 
@@ -100,7 +100,11 @@ def prepare_data(seqs, labels, maxlen=None):
 
 
 if __name__ == "__main__":
-    train, val, test = get_raw_data("/home/sauce/git/upgraded-system/data/xs1000.txt",
-                                    "/home/sauce/git/upgraded-system/data/targets1000.txt")
-    c = _read_sentences("/home/sauce/git/upgraded-system/data/targets1000.txt")
-    print(build_vocab("/home/sauce/git/upgraded-system/data/targets1000.txt"))
+    train, val, test = get_raw_data("../data/xs1000.txt",
+                                    "../data/targets1000.txt")
+    c = _read_sentences("../data/targets1000.txt")
+    print np.array( train[0] );
+    #print val;
+    #print test;
+
+    print(build_vocab("../data/targets1000.txt"))
