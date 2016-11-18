@@ -437,8 +437,8 @@ def build_model(tparams, options):
     if pred.dtype == 'float16':
         off = 1e-6
 
-    # NOTE: Finished adding the softmax layer.
-    cost = -tensor.log( pred[:, tensor.arange(pred.shape[0])[:,None], y] + off ).mean()
+    # NOTE: Finished adding the softmax layer with mask.
+    cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[0])[None,:], y ] * mask + off ).mean()
 
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
