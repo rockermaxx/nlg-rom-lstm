@@ -145,11 +145,12 @@ def param_init_lstm(options, params, prefix='lstm'):
     # Input state of dims 3
     # Cell state of dims |H|
     # 4 matrices of size |H|*|H+X_dim|
-    weight = numpy.random.rand(4, options['dim_proj'], options['dim_proj'] + 3)
+    # TODO: Better if orthogonal?
+    weight = numpy.random.rand(4, options['dim_proj'], options['dim_proj'] + 3) * options['w_multiplier'];
 
     # Bias vectors of length |H|
     # 4 for each of the above matrices
-    bias = numpy.random.rand(4, options['dim_proj'])
+    bias = numpy.random.rand(4, options['dim_proj']) * options['b_multiplier'];
 
     params['weight'] = weight
     params['bias'] = bias.astype(config.floatX)
@@ -177,6 +178,8 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     # x_ : 3xN
     # h_ : HxN
     # c_ : HxN
+    # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
+    # of the code is N major.
     def _step(m_, x_, h_, c_):
         # Concat x_ and h_ to get (H+3)xN matrix
         ip_mat = tensor.concatenate([x_, h_], axis=0)
@@ -207,6 +210,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
     # No idea why this is here. :/
     # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
+    # NOTE: These are the inputs X. It is called state_below to allow for stacking multiple LSTMs on top of each other.
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
                    tparams[_p(prefix, 'b')])
 
@@ -399,19 +403,31 @@ def build_model(tparams, options):
     #                                            options['dim_proj']])
     #
 
+    # TxHxN for some reason.
     proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
                                             mask=mask)
     # TODO(biteandbytes) : Modify this ?
+    # tparams[U] = HxO
+    # O = output one hot vector.
+    # H = Hidden state size.
     if options['encoder'] == 'lstm':
-        proj = (proj * mask[:, :, None]).sum(axis=0)
-        proj = proj / mask.sum(axis=0)[:, None]
-    if options['use_dropout']:
-        proj = dropout_layer(proj, use_noise, trng)
+        #proj = (proj * mask[:, :, None]).sum(axis=0)
+        #proj = proj / mask.sum(axis=0)[:, None]
+        # B = O
 
-    # TODO(saipraveenb, akshay-balaji, rockermaxx) : Needs to be changed
-    # Dims : proj : HxNxT (?), tparams['U'] : |V|xH, tparams['b'] : |V|x1
-    pred = tensor.nnet.softmax(tensor.dot(proj, tparams['U']) + tparams['b'])
+        # TxNxO, for some reason.
+        proj = tensor.tensordot( proj, tparams['U'], axes=[1,0] ) + tparams['b'][None, None, :];
+
+    # TODO(saipraveenb): Check if we need dropout option.
+    #if options['use_dropout']:
+    #    proj = dropout_layer(proj, use_noise, trng)
+
+    # pred = TxNxO
+    #pred = tensor.nnet.softmax( proj );
+    exp_pred = tensor.exp( pred );
+    # TxNxO ( last dimension softmaxed )
+    pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
 
@@ -421,8 +437,8 @@ def build_model(tparams, options):
     if pred.dtype == 'float16':
         off = 1e-6
 
-    # TODO(bitesandbytes, saipraveenb) : Add mask here. Also change the cost function?
-    cost = -tensor.log(pred[tensor.arange(n_samples), y] + off).mean()
+    # NOTE: Finished adding the softmax layer.
+    cost = -tensor.log( pred[:, tensor.arange(pred.shape[0])[:,None], y] + off ).mean()
 
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
@@ -487,13 +503,15 @@ def train_lstm(
         batch_size=16,  # The batch size during training.
         valid_batch_size=64,  # The batch size used for validation/test set.
         dataset='imdb',
-
         # Parameter for extra option
         noise_std=0.,
         use_dropout=True,  # if False slightly faster, but worst test error
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
+        ydim=22, # Output dimensions.
+        w_multiplier=0.2,
+        b_multiplier=0.05,
 ):
     # Model options
     model_options = locals().copy()
@@ -510,9 +528,10 @@ def train_lstm(
     prepare_data = encoder_decoder.prepare_data
 
     # Chosen as |num words| + 1 (0 -> no word | empty)
-    ydim = 22
+    # NOTE: Added ydim as an input to the function and initialized to 22.
+    # ydim = 22
 
-    model_options['ydim'] = ydim
+    #model_options['ydim'] = ydim
 
     print('Building model')
     # This create the initial parameters as numpy ndarrays.
