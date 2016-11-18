@@ -390,8 +390,11 @@ def build_model(tparams, options):
     # Used for dropout.
     use_noise = theano.shared(numpy_floatX(0.))
 
+    # TxNxX float
     x = tensor.tensor3('x', dtype=config.floatX)
+    # TxN float( logically boolean )
     mask = tensor.matrix('mask', dtype=config.floatX)
+    # TxN int64
     y = tensor.matrix('y', dtype='int64')
 
     n_timesteps = x.shape[0]
@@ -596,7 +599,7 @@ def train_lstm(
 
             for _, train_index in kf:
                 uidx += 1
-                use_noise.set_value(1.)
+                use_noise.set_value(0.)
 
                 # Select the random examples for this minibatch
                 y = [train[1][t] for t in train_index]
@@ -605,6 +608,10 @@ def train_lstm(
                 # Get the data in numpy.ndarray format
                 # This swap the axis!
                 # Return something of shape (minibatch maxlen, n samples)
+
+                # x = TxNx3 float16
+                # m = TxN boolean
+                # y = TxN int64
                 x, mask, y = prepare_data(x, y)
                 n_samples += x.shape[1]
 
