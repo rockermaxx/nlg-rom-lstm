@@ -448,7 +448,7 @@ def build_model(tparams, options):
 
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
 
-    f_pred = theano.function([x, mask], pred.argmax(axis=1), name='f_pred')
+    f_pred = theano.function([x, mask], pred.argmax(axis=2), name='f_pred')
 
     off = 1e-8
     if pred.dtype == 'float16':
@@ -494,8 +494,14 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
                                   maxlen=None)
+        # TxN
         preds = f_pred(x, mask)
-        targets = numpy.array(data[1])[valid_index]
+        # TxN
+        targets = y;
+        print("TARGET: ")
+        print(targets)
+        print("PRED: ")
+        print(preds);
         valid_err += (preds == targets).sum()
     valid_err = 1. - numpy_floatX(valid_err) / len(data[0])
 
@@ -597,9 +603,9 @@ def train_lstm(
     bad_count = 0
 
     if validFreq == -1:
-        validFreq = len(train[0]) // batch_size
+        validFreq = len(train[0]) # batch_size
     if saveFreq == -1:
-        saveFreq = len(train[0]) // batch_size
+        saveFreq = len(train[0]) # batch_size
 
     uidx = 0  # the number of update done
     estop = False  # early stop
@@ -628,6 +634,9 @@ def train_lstm(
                 # y = TxN int64
                 x, mask, y = prepare_data(x, y)
                 n_samples += x.shape[1]
+                # Sample.
+                #print("SAMPLE MASK");
+                #print( x );
 
                 cost = f_grad_shared(x, mask, y.astype(numpy.int64))
                 f_update(lrate)
@@ -657,21 +666,22 @@ def train_lstm(
                                            kf_valid)
                     test_err = pred_error(f_pred, prepare_data, test, kf_test)
 
+
                     history_errs.append([valid_err, test_err])
 
-                    if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
-                        best_p = unzip(tparams)
-                        bad_counter = 0
+                    #if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
+                    #    best_p = unzip(tparams)
+                    #    bad_counter = 0
 
                     print('Train ', train_err, 'Valid ', valid_err,
                           'Test ', test_err)
 
-                    if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
-                        bad_counter += 1
-                        if bad_counter > patience:
-                            print('Early Stop!')
-                            estop = True
-                            break
+                    #if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
+                    #    bad_counter += 1
+                    #    if bad_counter > patience:
+                    #        print('Early Stop!')
+                    #        estop = True
+                    #        break
 
             print('Seen %d samples' % n_samples)
 
