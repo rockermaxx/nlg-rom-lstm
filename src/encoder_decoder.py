@@ -1,18 +1,20 @@
 import collections
 import csv
 import random
+
 import numpy as np
 import tensorflow as tf
 
 
 def _read_words(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        return filter(None, f.read().decode("utf-8").replace(".", " <eos>").replace("\n", " <eop> ").split())
+        return filter(None, f.read().decode("utf-8").replace(".", " <eos>").
+                      replace(", ", " <comma> ").replace("\n", " <eop> ").split())
 
 
 def _read_sentences(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        s = f.read().decode("utf-8").replace(".", " <eos>").replace("\n", " <eop><EOP_TAG>")
+        s = f.read().decode("utf-8").replace(".", " <eos>").replace(", ", " <comma> ").replace("\n", " <eop><EOP_TAG>")
         return filter(None, s.split("<EOP_TAG>"))
 
 
@@ -103,8 +105,8 @@ if __name__ == "__main__":
     train, val, test = get_raw_data("../data/xs1000.txt",
                                     "../data/targets1000.txt")
     c = _read_sentences("../data/targets1000.txt")
-    print np.array( train[0] );
-    #print val;
-    #print test;
+    print np.array(train[0]);
+    # print val;
+    # print test;
 
     print(build_vocab("../data/targets1000.txt"))
