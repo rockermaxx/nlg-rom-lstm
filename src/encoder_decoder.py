@@ -58,7 +58,7 @@ def get_raw_data(xs, ys, train_frac=0.7, val_frac=0.2, test_frac=0.1):
     tr_end = int(train_frac * len(ret_data))
     val_end = tr_end + int(val_frac * len(ret_data))
 
-    return _split(ret_data[:tr_end]), _split(ret_data[tr_end:val_end]), _split(ret_data[val_end:])
+    return _split(ret_data[:tr_end]), _split(ret_data[tr_end:val_end]), _split(ret_data[val_end:]), vocab
 
 
 # Input - seqs: num_samples*3, labels: num_samples*[list]

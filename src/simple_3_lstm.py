@@ -498,10 +498,10 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
         preds = f_pred(x, mask)
         # TxN
         targets = y;
-        print("TARGET: ")
-        print(targets)
-        print("PRED: ")
-        print(preds);
+        #print("TARGET: ")
+        #print(targets)
+        #print("PRED: ")
+        #print(preds);
         valid_err += (preds == targets).sum()
     valid_err = 1. - numpy_floatX(valid_err) / len(data[0])
 
@@ -524,7 +524,7 @@ def train_lstm(
         saveFreq=1110,  # Save the parameters after every saveFreq updates
         maxlen=100,  # Sequence longer then this get ignored
         batch_size=16,  # The batch size during training.
-        valid_batch_size=64,  # The batch size used for validation/test set.
+        valid_batch_size=16,  # The batch size used for validation/test set.
         dataset='imdb',
         # Parameter for extra option
         noise_std=0.,
@@ -535,6 +535,7 @@ def train_lstm(
         ydim=22, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
+        exampleFreq=100,
 ):
     # Model options
     model_options = locals().copy()
@@ -543,8 +544,12 @@ def train_lstm(
     print('Loading data')
 
     # (N*[x], N*[y])
-    train, valid, test = encoder_decoder.get_raw_data("../data/xs1000.txt",
+    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/xs1000.txt",
                                                       "../data/targets1000.txt")
+    vocab_lst = [''] * ( len(vocab.items()) + 1 );
+    for w,i in vocab.items():
+        print(i);
+        vocab_lst[i] = w;
 
     # Input - seqs: num_samples*3, labels: num_samples*[list]
     # Return X:maxlen*num_samples*3, X_mask: max_len*num_samples, labels: maxlen*num_samples
@@ -591,9 +596,11 @@ def train_lstm(
 
     print('Optimization')
 
+    # Random shuffle partition.
     kf_valid = get_minibatches_idx(len(valid[0]), valid_batch_size)
     kf_test = get_minibatches_idx(len(test[0]), valid_batch_size)
 
+    example_test_batch = kf_test[ int( numpy.random.rand() * len(kf_test) ) ][1];
     print("%d train examples" % len(train[0]))
     print("%d valid examples" % len(valid[0]))
     print("%d test examples" % len(test[0]))
@@ -648,6 +655,25 @@ def train_lstm(
                 if numpy.mod(uidx, dispFreq) == 0:
                     print('Epoch ', eidx, 'Update ', uidx, 'Cost ', cost)
 
+                if numpy.mod(uidx, exampleFreq) == 0:
+
+                    example_index = example_test_batch;
+                    x, mask, y = prepare_data([test[0][t] for t in example_index],
+                                  numpy.array(test[1])[example_index],
+                                  maxlen=None)
+                    # TxN
+                    preds = f_pred(x, mask).transpose().astype(numpy.int64);
+                    # TxN
+                    targets = y.transpose().astype(numpy.int64);
+
+                    k = int( numpy.random.rand() * len(targets) );
+
+                    print( "Targets for x=", x[0][k] );
+                    print( ''.join([ vocab_lst[o] + ' ' for o in targets[k].tolist() ] ) )
+                    print( "Prediction " );
+                    print( ''.join([ vocab_lst[o] + ' ' for o in preds[k].tolist() ] ) )
+
+
                 if saveto and numpy.mod(uidx, saveFreq) == 0:
                     print('Saving...')
 
@@ -675,6 +701,7 @@ def train_lstm(
 
                     print('Train ', train_err, 'Valid ', valid_err,
                           'Test ', test_err)
+
 
                     #if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
                     #    bad_counter += 1
