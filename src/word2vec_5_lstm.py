@@ -12,6 +12,7 @@ from theano import config
 from theano.tensor.shared_randomstreams import RandomStreams
 
 import word2vec_coder
+import nltk.translate.bleu_score as bleu
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
