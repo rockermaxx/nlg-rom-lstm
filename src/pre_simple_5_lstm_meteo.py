@@ -105,6 +105,9 @@ def init_params(options):
     params['U'] = 0.01 * numpy.random.randn(options['ydim'], options['dim_proj']).astype(config.floatX)
     params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
 
+    params['U_context'] = 0.01 * numpy.random.randn(options['ydim'], options['dim_proj']).astype(config.floatX)
+    params['b_context'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
+
     return params
 
 
@@ -146,21 +149,21 @@ def param_init_lstm(options, params, prefix='lstm'):
     # Hidden state of dims |H|
     # Input state of dims 3
     # Cell state of dims |H|
-    # 4 matrices of size |H|*|H+X_dim|
+    # 4 matrices of size |H|*|X+W+H|
     # TODO: Better if orthogonal?
     weight = 0.01 * numpy.random.randn( 4, options['dim_proj'], options['x_size'] + options['dim_proj'] );
 
     # Bias vectors of length |H|
     # 4 for each of the above matrices
-    bias = numpy.zeros(( 4, options['dim_proj'] ));
+    bias = numpy.zeros(( 4, options['dim_proj'] ))
+
 
     params['weight'] = weight
     params['bias'] = bias.astype(config.floatX)
 
     return params
 
-
-def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=None):
+def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=None, memory=None):
     nsteps = state_below.shape[0]
     if state_below.ndim == 3:
         n_samples = state_below.shape[1]
@@ -168,6 +171,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         n_samples = 1
 
     assert mask is not None
+    assert memory is not None
     #assert trng is not None
     # NOT USED, REMOVE ?
     def _slice(_x, n, dim):
@@ -187,7 +191,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
     # of the code is N major.
     # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
-    def _step_2(m_, x_, r_, h_, c_, w_):
+    def _step_2(m_, x_, r_, h_, c_, w_, y_):
         # Concat x_, h_ and w_ to get Nx(X+W+H) matrix
         ip_mat = tensor.concatenate([x_, w_, h_], axis=1 )
 
@@ -224,13 +228,20 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         # Predict next vector here.
         # U = OxH.
         # B = O.
-        proj = tensor.tensordot( h, tparams['U'], axes=[1,1] ) + tparams['b'][None, :];
+        context = tensor.tensordot( h, tparams['U'], axes=[1,1] ) + tparams['b'][None, :]
+
+        y_old = tensor.tensordot( h, tparams['U_context'], axes=[1,1] ) + tparams['b_context'][None, :]
+        y_old = tensor.nnet.softmax(y_old)
 
         # pred = NxO
         #pred = tensor.nnet.softmax( proj );
-        exp_pred = tensor.exp( proj / options['sample_temperature'] );
-        # NxO ( last dimension softmaxed )
-        pred = exp_pred / exp_pred.sum( axis=1, keepdims=True );
+        # Nx(M+1)
+        context = tensor.nnet.softmax(context)
+
+        #temp: NxW
+        y = tensor.tensordot(context[:,:-1], memory, axes=[1,0]) + context[:, -1][:, None]*y_old
+        #temp = tensor.sum(temp)
+
 
         # ArgMax?
         # pred[ T.arange(pred.shape[0])[:,None], T.arange(pred.shape[1])[None,:], pred.argmax( axis=2 ) ] = 1.;
@@ -243,7 +254,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         #pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], w_nums ] = 1.;
         # NxW
         w = tensor.extra_ops.to_one_hot( w_nums, options['ydim'], dtype=config.floatX)
-        return h, c, w.astype(config.floatX)
+        return h, c, w.astype(config.floatX), y
 
 
     # No idea why this is here. :/
@@ -262,15 +273,15 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
                                 sequences=[mask, state_below, rands],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
                                               tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size)
+                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size),
                                               ],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
     # Return the words.
-    return rval[2];
+    return rval[2]
 
 
-def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
+def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None, memory=None):
     nsteps = state_below.shape[0]
     if state_below.ndim == 3:
         n_samples = state_below.shape[1]
@@ -278,6 +289,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         n_samples = 1
 
     assert mask is not None
+    assert memory is not None
 
     # NOT USED, REMOVE ?
     def _slice(_x, n, dim):
@@ -295,7 +307,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
     # of the code is N major.
     # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
-    def _step(m_, x_w_, h_, c_ ):
+    def _step(m_, x_w_, h_, c_, y_):
         # Concat x_w_, h_ to get Nx(X+W+H) matrix
         ip_mat = tensor.concatenate([x_w_, h_], axis=1 )
 
@@ -319,7 +331,6 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         c = i * c_new + f * c_
         # Retain based on mask
         c = m_[:, None] * c + (1. - m_)[:, None] * c_
-
         # Compute new hidden state
         # h : NxH
         h = tensor.nnet.sigmoid(
@@ -329,7 +340,21 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         # Retain based on mask
         h = m_[:, None] * h + (1. - m_)[:, None] * h_
 
-        return h, c
+        context = tensor.tensordot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
+
+        y_old = tensor.tensordot(h, tparams['U_context'], axes=[1, 1]) + tparams['b_context'][None, :]
+        y_old = tensor.nnet.softmax(y_old)
+
+        # pred = NxO
+        # pred = tensor.nnet.softmax( proj );
+        # Nx(M+1)
+        context = tensor.nnet.softmax(context)
+
+        # temp: NxW
+        y = tensor.tensordot(context[:, :-1], memory, axes=[1, 0]) + context[:, -1][:, None] * y_old
+        # temp = tensor.sum(temp)
+
+        return h, c, y
 
     # No idea why this is here. :/
     # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
@@ -340,13 +365,15 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
     # TODO(saipraveenb) : Can you fix this scan function ?
     dim_proj = options['dim_proj']
+    word_size = options['ydim']
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, dim_proj)],
+                                              tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
+                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size)],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
-    return rval[0]
+    return rval[2]
 # ff: Feed Forward (normal neural net), only useful to put after lstm
 #     before the classifier.
 layers = {'lstm': (param_init_lstm, lstm_layer, lstm_spass)}
@@ -533,6 +560,7 @@ def build_model(tparams, options):
     # TxNxH.
     proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
+
                                             mask=mask,memory=memory)
 
     # TxNx(X+W) float( for training ) OR TxNxX float( for prediction )
@@ -544,6 +572,9 @@ def build_model(tparams, options):
                                             prefix=options['encoder'],
                                             mask=mask2,
                                             trng=trng,memory=memory)
+
+
+
 
     #w = trng.multinomial( pvals=w );
     # TODO(biteandbytes) : Modify this ?
@@ -570,6 +601,7 @@ def build_model(tparams, options):
     # TxNxO ( last dimension softmaxed )
     pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
+
     f_pred_prob = theano.function([x, mask, memory], pred, name='f_pred_prob')
     theano.config.exception_verbosity='high'
     #x_2 =
@@ -581,6 +613,7 @@ def build_model(tparams, options):
 
     # NOTE: Finished adding the softmax layer with mask.
     cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], y ] * mask + off ).sum()
+
 
     return use_noise, x, mask, y, memory, f_pred_prob, f_pred, cost
 
@@ -677,6 +710,7 @@ def train_lstm(
         exampleFreq=100,
         inpdim=5,
         sample_temperature=0.33,
+        memdim=3
 ):
     x_size = inpdim + ydim;
     # Model options

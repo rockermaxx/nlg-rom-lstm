@@ -1,3 +1,8 @@
+# TODO:
+# 1. Fix broken functions
+# 2. Network architecture changed, but functions need to use mask differently
+# 3. Evaluation function
+
 from __future__ import print_function
 
 import cPickle as pickle
@@ -9,10 +14,10 @@ import numpy
 import theano
 import theano.tensor as tensor
 from theano import config
+#from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano.tensor.shared_randomstreams import RandomStreams
 
-import word2vec_coder
-import nltk.translate.bleu_score as bleu
+import encoder_decoder
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -43,7 +48,7 @@ def get_minibatches_idx(n, minibatch_size, shuffle=False):
         minibatch_start + minibatch_size])
         minibatch_start += minibatch_size
 
-    if minibatch_start != n:
+    if (minibatch_start != n):
         # Make a minibatch out of what is left
         minibatches.append(idx_list[minibatch_start:])
 
@@ -88,6 +93,7 @@ def init_params(options):
     """
     params = OrderedDict()
 
+    # TODO(biteandbytes) : params['Wemb'] is not required anymore. Remove ?
     # embedding
     # randn = numpy.random.rand(options['n_words'],
     #                          options['dim_proj'])
@@ -140,16 +146,21 @@ def param_init_lstm(options, params, prefix='lstm'):
     # Hidden state of dims |H|
     # Input state of dims 3
     # Cell state of dims |H|
-    # 4 matrices of size |H|*|H+X_dim|
+    # 4 matrices of size |H|*|W+H|
     # TODO: Better if orthogonal?
-    weight = 0.01 * numpy.random.randn(4, options['dim_proj'], options['x_size'] + options['dim_proj'])
+    weight = 0.01 * numpy.random.randn( 4, options['dim_proj'], options['ydim'] + options['dim_proj'] )
+    #weight_mlp_1 = XxH
+    weight_mlp_1 = 0.001 * numpy.random.randn(options['inpdim'], options['dim_proj'])
+    bias_mlp = numpy.zeros(options['dim_proj'])
 
     # Bias vectors of length |H|
     # 4 for each of the above matrices
-    bias = numpy.zeros((4, options['dim_proj']))
+    bias = numpy.zeros(( 4, options['dim_proj'] ));
 
     params['weight'] = weight
     params['bias'] = bias.astype(config.floatX)
+    params['weight_mlp_1'] = weight_mlp_1
+    params['bias_mlp'] = bias_mlp
 
     return params
 
@@ -162,8 +173,13 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         n_samples = 1
 
     assert mask is not None
-    def sigmoid(x):
-        return 1./(1. + exp(x))
+    #assert trng is not None
+    # NOT USED, REMOVE ?
+    def _slice(_x, n, dim):
+        if _x.ndim == 3:
+            return _x[:, :, n * dim:(n + 1) * dim]
+        return _x[:, n * dim:(n + 1) * dim]
+
 
     # Dims
     # m_ : N
@@ -173,25 +189,27 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # h_ : NxH
     # c_ : NxH
     # w_ : NxW
-    # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top.
-    # Becomes extremely confusing especially when the rest of the code is N major.
-    def _step_2(m_, x_, h_, c_, w_):
-        # Concat x_, h_ and w_ to get Nx(X+D+H) matrix
-        ip_mat = numpy.concatenate([x_, w_, h_], axis=1)
+    # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
+    # of the code is N major.
+    # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
+    def _step_2(m_, r_, h_, c_, w_):
+        # Concat x_, h_ and w_ to get Nx(W+H) matrix
+        ip_mat = tensor.concatenate([w_, h_], axis=1 )
 
         # Compute forget gate values
         # f : NxH matrix
-        f = sigmoid(numpy.dot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
-        # f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
+        f = tensor.nnet.sigmoid(
+            tensor.tensordot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
+        #f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
         # Compute input gate values
         # i : NxH matrix
-        i = sigmoid(numpy.dot(ip_mat, tparams['weight'][1], axes=[1, 1]) + tparams['bias'][1, :][None, :])
-        # i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
+        i = tensor.nnet.sigmoid(tensor.tensordot(ip_mat, tparams['weight'][1], axes=[1,1]) + tparams['bias'][1, :][None, :])
+        #i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
 
-        # c_new : NxH matrix
-        c_new = numpy.tanh(numpy.dot(ip_mat, tparams['weight'][2], axes=[1, 1]) + tparams['bias'][2, :][None, :])
-        # c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
+        #c_new : NxH matrix
+        c_new = tensor.tanh(tensor.tensordot(ip_mat, tparams['weight'][2], axes=[1,1]) + tparams['bias'][2, :][None, :])
+        #c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
         # c : NxH
@@ -201,78 +219,62 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
 
         # Compute new hidden state
         # h : NxH
-        h = sigmoid(numpy.dot(ip_mat, tparams['weight'][3], axes=[1, 1]) + tparams['bias'][3, :][None, :]) * numpy.tanh(
-            c)
-        # h = tensor.nnet.sigmoid(
+        h = tensor.nnet.sigmoid(
+            tensor.tensordot(ip_mat, tparams['weight'][3], axes=[1,1]) + tparams['bias'][3, :][None, :]) * tensor.tanh(c)
+        #h = tensor.nnet.sigmoid(
         #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
         # Retain based on mask
         h = m_[:, None] * h + (1. - m_)[:, None] * h_
 
         # Predict next vector here.
-        # U = DxH.
-        # B = D.
-        proj = numpy.dot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
+        # U = OxH.
+        # B = O.
+        proj = tensor.tensordot( h, tparams['U'], axes=[1,1] ) + tparams['b'][None, :];
 
-        # Not used for word2vec implementations
-        # pred = NxD
-        # pred = tensor.nnet.softmax( proj );
-        # exp_pred = tensor.exp(proj / options['sample_temperature'])
-        # NxD ( last dimension softmaxed )
-        # pred = exp_pred / exp_pred.sum(axis=1, keepdims=True)
+        # pred = NxO
+        #pred = tensor.nnet.softmax( proj );
+        exp_pred = tensor.exp( proj / options['sample_temperature'] );
+        # NxO ( last dimension softmaxed )
+        pred = exp_pred / exp_pred.sum( axis=1, keepdims=True );
 
         # ArgMax?
         # pred[ T.arange(pred.shape[0])[:,None], T.arange(pred.shape[1])[None,:], pred.argmax( axis=2 ) ] = 1.;
         # Or Sample from last axis?
         # TxNxO Last dimension one-hot sampled.
-        # w = trng2.multinomial( pvals=pred );
+        #w = trng2.multinomial( pvals=pred );
 
-        # Sample a vector from proj for each pred; Overwrite pred
-        for i in range(h.shape[0]):
-            # Obtain proj[i]
-            cur_proj = proj[i]
+        # N
+        w_nums = ( tensor.switch( tensor.gt( r_, tensor.extra_ops.cumsum( pred, axis=1 ) ), 1, 0 ) ).sum( axis=1 );
+        #pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], w_nums ] = 1.;
+        # NxW
+        w = tensor.extra_ops.to_one_hot( w_nums, options['ydim'], dtype=config.floatX)
+        return h, c, w.astype(config.floatX)
 
-            # Obtain candidates using word2vec
-            cs = word2vec_coder.get_words(cur_proj[:-3], num_words=3)
 
-            # Obtain scores
-            scores = numpy.asarray([x[1] for x in cs])
+    # No idea why this is here. :/
+    # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
+    # NOTE: These are the inputs X. It is called state_below to allow for stacking multiple LSTMs on top of each other.
+    # And yes.. not needed anymore. This was the original Wx computation.
+    #state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
+    #               tparams[_p(prefix, 'b')])
 
-            # Decay scores exponentially
-            scores = numpy.exp(-scores ** 2).append(cur_proj[-3:].tolist())
-            selected = numpy.random.choice([c[0] for c in cs].append(["<comma>", "<eos>", "<eop>"]), 1, p=scores)
-            new_cur_proj = numpy.zeros(cur_proj.shape)
-            if selected == "<comma>":
-                new_cur_proj[-3] = 1.
-            elif selected == "<eos>":
-                new_cur_proj[-2] = 1.
-            elif selected == "<eop>":
-                new_cur_proj[-1] = 1.
-            else:
-                new_cur_proj[:-3] = word2vec_coder.get_model_feature(selected)
-
-            proj[i] = new_cur_proj
-
-        return h, c, proj
-
-    # state_below = trng.multinomial(pvals=state_below);
+    #state_below = trng.multinomial(pvals=state_below);
+    # TODO(saipraveenb) : Can you fix this scan function ?
     dim_proj = options['dim_proj']
     word_size = options['ydim']
-    print("nsteps=%0.4f, n_samples=%0.4f, word_size = %0.4f" % (nsteps, n_samples, word_size))
-
-    op_sentences = numpy.zeros((nsteps, n_samples, word_size))
-    prev_h = numpy.zeros((n_samples, dim_proj))
-    prev_c = numpy.zeros((n_samples, dim_proj))
-    prev_words = numpy.zeros((n_samples, word_size))
-
-    for t in range(nsteps):
-        h, c, words = _step_2(mask[t], state_below[t], prev_h, prev_c, prev_words)
-        op_sentences[t] = words
-        prev_c = c
-        prev_h = h
-        prev_words = words
-
+    rands = trng.uniform( (nsteps,state_below.shape[1],word_size) )
+    mlp_l1 = tensor.nnet.sigmoid(
+        tensor.tensordot(state_below[0, :, :options['inpdim']], tparams['weight_mlp_1'], axes=[1, 0]) + tparams['bias_mlp'][None, :])
+    rval, updates = theano.scan(_step_2,
+                                sequences=[mask, rands],
+                                outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
+                                              mlp_l1,
+                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size)
+                                              ],
+                                name=_p(prefix, '_layers'),
+                                n_steps=nsteps)
     # Return the words.
-    return op_sentences
+    return rval[2]
 
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
@@ -284,6 +286,12 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
     assert mask is not None
 
+    # NOT USED, REMOVE ?
+    def _slice(_x, n, dim):
+        if _x.ndim == 3:
+            return _x[:, :, n * dim:(n + 1) * dim]
+        return _x[:, n * dim:(n + 1) * dim]
+
     # Dims
     # m_ : N
     # W  : Hx(X+W+H)
@@ -291,28 +299,28 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     # x_w_ : Nx(X+W)
     # h_ : NxH
     # c_ : NxH
-    # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top.
-    # Becomes extremely confusing especially when the rest of the code is N major.
-    def _step(m_, x_w_, h_, c_):
-        # Concat x_w_, h_ to get Nx(X+W+H) matrix
-        ip_mat = tensor.concatenate([x_w_, h_], axis=1)
-
+    # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
+    # of the code is N major.
+    # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
+    def _step(m_, x_w_, h_, c_ ):
+        # Concat x_w_, h_ and remove x_ to get Nx(W+H) matrix
+        ip_mat = tensor.concatenate([x_w_, h_], axis=1 )
+        # TODO: Right way?
+        ip_mat = ip_mat[:, options['inpdim']: ]
         # Compute forget gate values
         # f : NxH matrix
         f = tensor.nnet.sigmoid(
             tensor.tensordot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
-        # f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
+        #f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
         # Compute input gate values
         # i : NxH matrix
-        i = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][1], axes=[1, 1]) + tparams['bias'][1, :][None, :])
-        # i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
+        i = tensor.nnet.sigmoid(tensor.tensordot(ip_mat, tparams['weight'][1], axes=[1,1]) + tparams['bias'][1, :][None, :])
+        #i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
 
-        # c_new : NxH matrix
-        c_new = tensor.tanh(
-            tensor.tensordot(ip_mat, tparams['weight'][2], axes=[1, 1]) + tparams['bias'][2, :][None, :])
-        # c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
+        #c_new : NxH matrix
+        c_new = tensor.tanh(tensor.tensordot(ip_mat, tparams['weight'][2], axes=[1,1]) + tparams['bias'][2, :][None, :])
+        #c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
         # c : NxH
@@ -323,9 +331,8 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         # Compute new hidden state
         # h : NxH
         h = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][3], axes=[1, 1]) + tparams['bias'][3, :][None, :]) * tensor.tanh(
-            c)
-        # h = tensor.nnet.sigmoid(
+            tensor.tensordot(ip_mat, tparams['weight'][3], axes=[1,1]) + tparams['bias'][3, :][None, :]) * tensor.tanh(c)
+        #h = tensor.nnet.sigmoid(
         #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
         # Retain based on mask
         h = m_[:, None] * h + (1. - m_)[:, None] * h_
@@ -333,21 +340,25 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         return h, c
 
     # No idea why this is here. :/
+    # TODO(saipraveenb, akshay-balaji, rockermaxx) : Remove this ?
     # NOTE: These are the inputs X. It is called state_below to allow for stacking multiple LSTMs on top of each other.
     # And yes.. not needed anymore. This was the original Wx computation.
-    # state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
+    #state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
     #               tparams[_p(prefix, 'b')])
 
+    # TODO(saipraveenb) : Can you fix this scan function ?
     dim_proj = options['dim_proj']
+    # mlp_l1 : NxH
+    mlp_l1 = tensor.nnet.sigmoid(
+        tensor.tensordot(state_below[0, :, :options['inpdim']], tparams['weight_mlp_1'], axes=[1, 0]) + tparams['bias_mlp'][None, :])
+
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, dim_proj)],
+                                              mlp_l1],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
     return rval[0]
-
-
 # ff: Feed Forward (normal neural net), only useful to put after lstm
 #     before the classifier.
 layers = {'lstm': (param_init_lstm, lstm_layer, lstm_spass)}
@@ -389,7 +400,7 @@ def adadelta(lr, tparams, grads, x, mask, y, cost):
     ----------
     lr : Theano SharedVariable
         Initial learning rate
-    tparams: Theano SharedVariable
+    tpramas: Theano SharedVariable
         Model parameters
     grads: Theano variable
         Gradients of cost w.r.t to parameres
@@ -451,7 +462,7 @@ def rmsprop(lr, tparams, grads, x, mask, y, cost):
     ----------
     lr : Theano SharedVariable
         Initial learning rate
-    tparams: Theano SharedVariable
+    tpramas: Theano SharedVariable
         Model parameters
     grads: Theano variable
         Gradients of cost w.r.t to parameres
@@ -513,16 +524,17 @@ def build_model(tparams, options):
     # Used for dropout.
     use_noise = theano.shared(numpy_floatX(0.))
 
-    # TxNx(X+D) float( for training ) OR TxNxX float( for prediction )
+    # TxNx(X+W) float( for training ) OR TxNxX float( for prediction )
     x = tensor.tensor3('x', dtype=config.floatX)
     # TxN float( logically boolean )
     mask = tensor.matrix('mask', dtype=config.floatX)
-    # TxNxD float
-    y = tensor.matrix('y', dtype=config.floatX)
+    # TxN int64
+    y = tensor.matrix('y', dtype='int64')
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
+    # TODO(biteandbytes) : This gets inputs. Change to n_timesteps*n_samples*3 tensor
     # emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
     #                                            n_samples,
     #                                            options['dim_proj']])
@@ -533,57 +545,52 @@ def build_model(tparams, options):
                                             prefix=options['encoder'],
                                             mask=mask)
 
-    # TxNx(X+D) float( for training ) OR TxNxX float( for prediction )
+    # TxNx(X+W) float( for training ) OR TxNxX float( for prediction )
     x2 = tensor.tensor3('x_2', dtype=config.floatX)
     # TxN float( logically boolean )
     mask2 = tensor.matrix('mask_2', dtype=config.floatX)
     # Stochastic forward pass.
     spass = get_layer(options['encoder'])[2](tparams, x2, options,
-                                             prefix=options['encoder'],
-                                             mask=mask2,
-                                             trng=trng)
+                                            prefix=options['encoder'],
+                                            mask=mask2,
+                                            trng=trng)
 
-    # w = trng.multinomial( pvals=w );
+    #w = trng.multinomial( pvals=w );
+    # TODO(biteandbytes) : Modify this ?
     # tparams[U] = HxO # WRONG. It's _'OxH'_
     # O = output one hot vector.
     # H = Hidden state size.
     # NOTE: IT'S 'OxH' NOT 'HxO'. DON'T MENTION THINGS YOU ARE NOT
     # SURE ABOUT! I JUST WASTED AN HOUR.
     if options['encoder'] == 'lstm':
-        # TxNxD
-        proj = tensor.tensordot(proj, tparams['U'], axes=[2, 1]) + tparams['b'][None, None, :]
+        #proj = (proj * mask[:, :, None]).sum(axis=0)
+        #proj = proj / mask.sum(axis=0)[:, None]
+        # B = O
 
-    # if options['use_dropout']:
+        # TxNxO.
+        proj = tensor.tensordot( proj, tparams['U'], axes=[2,1] ) + tparams['b'][None, None, :];
+
+    # TODO(saipraveenb): Check if we need dropout option.
+    #if options['use_dropout']:
     #    proj = dropout_layer(proj, use_noise, trng)
 
-    # Ignore this
-    # exp_pred = tensor.exp(proj)
+    # pred = TxNxO
+    #pred = tensor.nnet.softmax( proj );
+    exp_pred = tensor.exp( proj );
+    # TxNxO ( last dimension softmaxed )
+    pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
-    # Ignore this.
-    # pred = exp_pred / exp_pred.sum(axis=2, keepdims=True)
-
-    f_pred_prob = theano.function([x, mask], proj, name='f_pred_prob')
-    theano.config.exception_verbosity = 'high'
-    # x_2 =
+    f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
+    theano.config.exception_verbosity='high'
+    #x_2 =
     f_pred = theano.function([x2, mask2], spass.argmax(axis=2), name='f_pred')
 
     off = 1e-8
-    if proj.dtype == 'float16':
+    if pred.dtype == 'float16':
         off = 1e-6
 
-    # 1. Y.*pred
-    # d_ij = TxNxD
-    d_ij = y * proj
-    # 2. Compute norms for both tensors
-    # *_norms = TxN
-    y_norms = tensor.norm(y, axis=2)
-    proj_norms = tensor.norm(y, axis=2)
-    # Compute cosine sim
-    # cos_sim = TxN
-    cos_sim = d_ij / (y_norms * proj_norms)
-    # Multiply by mask
-    # cost = 1x1
-    cost = -1 * ((cos_sim * mask).sum())
+    # NOTE: Finished adding the softmax layer with mask.
+    cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], y ] * mask + off ).sum()
 
     return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
@@ -601,7 +608,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim=5)
+                                  maxlen=None, x_dim = 3)
         pred_probs = f_pred_prob(x, mask)
         probs[valid_index, :] = pred_probs
 
@@ -620,51 +627,50 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     """
     valid_err = 0
     for _, valid_index in iterator:
-        # x = TxNx3 float16
-        # mask = TxN boolean
-        # y = TxNxD float16
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim=5)
-        # TxNxD
+                                  maxlen=None, x_dim = 3)
+        # TxN
         preds = f_pred(x, mask)
-        # TxNxD
+        # TxN
         targets = y
-        # print("TARGET: ")
-        # print(targets)
-        # print("PRED: ")
-        # print(preds);
-
-        # L2 error
-        valid_err += ((preds - targets) ** 2).sum()
+        #print("TARGET: ")
+        #print(targets)
+        #print("PRED: ")
+        #print(preds);
+        valid_err += (preds == targets).sum()
     valid_err = 1. - numpy_floatX(valid_err) / len(data[0])
 
     return valid_err
 
-
-# y : TxNxD int64
+# y : TxN int64
 # x : TxNx5 float16
-# Return z : TxNx(5+D)
-def reattach_data(x, y):
-    # TxNx(X+D)
-    return numpy.concatenate((x, y), axis=2)
+def reattach_data( x, y, inpsize=22 ):
+    # T-1 x N
+    y = y[:-1,:]
+    # TxN
+    y = numpy.concatenate( (numpy.zeros((1,y.shape[1])),y), axis=0 ).astype(numpy.int16);
+    # TxNx22
+    x_part = numpy.zeros( y.shape + (inpsize,) )
+    x_part[ numpy.arange( y.shape[0] )[:,None], numpy.arange(y.shape[1])[None,:], y ] = 1.;
 
+    # TxNx(X+W)
+    return numpy.concatenate( (x, x_part), axis=2 );
 
 def train_lstm(
         dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
         max_epochs=10000,  # The maximum number of epoch to run
-        disp_freq=10,  # Display to stdout the training progress every N updates
+        dispFreq=10,  # Display to stdout the training progress every N updates
         decay_c=0.,  # Weight decay for the classifier applied to the U weights.
         lrate=0.00005,  # Learning rate for sgd (not used for adadelta and rmsprop)
-        n_words=303,  # Vocabulary size
+        n_words=43,  # Vocabulary size
         optimizer=adadelta,
-        # sgd, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and
-        # decaying learning rate).
-        encoder='lstm',
+        # sgd, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and decaying learning rate).
+        encoder='lstm',  # TODO: can be removed must be lstm.
         saveto='lstm_model.npz',  # The best model will be saved there
-        valid_freq=1000,  # Compute the validation error after this number of update.
-        save_freq=3000,  # Save the parameters after every save_freq updates
+        validFreq=1000,  # Compute the validation error after this number of update.
+        saveFreq=3000,  # Save the parameters after every saveFreq updates
         maxlen=100,  # Sequence longer then this get ignored
         batch_size=64,  # The batch size during training.
         valid_batch_size=16,  # The batch size used for validation/test set.
@@ -675,30 +681,37 @@ def train_lstm(
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
-        ydim=303,  # Output dimensions (300 for w2v + 3)
+        ydim=43, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
-        example_freq=100,
-        inpdim=5,
+        exampleFreq=100,
+        inpdim=3,
         sample_temperature=0.33,
 ):
-    x_size = inpdim + ydim
+    x_size = inpdim + ydim;
     # Model options
     model_options = locals().copy()
     print("model options", model_options)
 
     print('Loading data')
 
-    # (N*[5-dim], N*[[D-dim]])
-    train, valid, test, vocab = word2vec_coder.get_raw_data("../data/complex_xs_50000.txt",
-                                                            "../data/complex_targets_50000.txt")
-    prepare_data = word2vec_coder.prepare_data
+    # (N*[x], N*[y])
+    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/xs5000.txt",
+                                                      "../data/targets5000.txt")
+    vocab_lst = [''] * ( len(vocab.items()) + 2 );
+    for w,i in vocab.items():
+        print(i);
+        vocab_lst[i] = w;
+
+    # Input - seqs: num_samples*3, labels: num_samples*[list]
+    # Return X:maxlen*num_samples*3, X_mask: max_len*num_samples, labels: maxlen*num_samples
+    prepare_data = encoder_decoder.prepare_data
 
     # Chosen as |num words| + 1 (0 -> no word | empty)
     # NOTE: Added ydim as an input to the function and initialized to 22.
     # ydim = 22
 
-    # model_options['ydim'] = ydim
+    #model_options['ydim'] = ydim
 
     print('Building model')
     # This create the initial parameters as numpy ndarrays.
@@ -739,7 +752,7 @@ def train_lstm(
     kf_valid = get_minibatches_idx(len(valid[0]), valid_batch_size)
     kf_test = get_minibatches_idx(len(test[0]), valid_batch_size)
 
-    example_test_batch = kf_test[int(numpy.random.rand() * len(kf_test))][1]
+    example_test_batch = kf_test[ int( numpy.random.rand() * len(kf_test) ) ][1];
     print("%d train examples" % len(train[0]))
     print("%d valid examples" % len(valid[0]))
     print("%d test examples" % len(test[0]))
@@ -748,10 +761,10 @@ def train_lstm(
     best_p = None
     bad_count = 0
 
-    if valid_freq == -1:
-        valid_freq = len(train[0])  # batch_size
-    if save_freq == -1:
-        save_freq = len(train[0])  # batch_size
+    if validFreq == -1:
+        validFreq = len(train[0]) # batch_size
+    if saveFreq == -1:
+        saveFreq = len(train[0]) # batch_size
 
     uidx = 0  # the number of update done
     estop = False  # early stop
@@ -777,51 +790,47 @@ def train_lstm(
 
                 # x = TxNx3 float16
                 # m = TxN boolean
-                # y = TxNxD float16
-                x, mask, y = prepare_data(x, y, x_dim=inpdim)
-                y = y.astype(numpy.float16)
-                x = x.astype(numpy.float16)
+                # y = TxN int64
+                x, mask, y = prepare_data(x, y, x_dim = inpdim)
                 n_samples += x.shape[1]
                 # Sample.
-                # print("SAMPLE MASK");
-                # print( x );
-                # x = TxNx(X+D)
-                x = reattach_data(x, y)
+                #print("SAMPLE MASK");
+                #print( x );
+                # x = TxNx(22+5)
+                x = reattach_data( x, y, inpsize = ydim );
 
-                cost = f_grad_shared(x, mask, y)
+                cost = f_grad_shared(x, mask, y.astype(numpy.int64))
                 f_update(lrate)
 
                 if numpy.isnan(cost) or numpy.isinf(cost):
                     print('bad cost detected: ', cost)
                     return 1., 1., 1.
 
-                if numpy.mod(uidx, disp_freq) == 0:
+                if numpy.mod(uidx, dispFreq) == 0:
                     print('Epoch ', eidx, 'Update ', uidx, 'Cost ', cost)
 
-                if numpy.mod(uidx, example_freq) == 0:
-                    example_index = example_test_batch
+                if numpy.mod(uidx, exampleFreq) == 0:
+
+                    example_index = example_test_batch;
                     x, mask, y = prepare_data([test[0][t] for t in example_index],
-                                              numpy.array(test[1])[example_index],
-                                              maxlen=None, x_dim=inpdim)
+                                  numpy.array(test[1])[example_index],
+                                  maxlen=None, x_dim = inpdim)
 
                     # Predict.. don't have to call reattach.
-                    # TxNxD
-                    preds = f_pred(x, mask).transpose()
-                    # TxNxD
-                    targets = y.transpose()
+                    # TxN
+                    preds = f_pred(x, mask).transpose().astype(numpy.int64);
+                    # TxN
+                    targets = y.transpose().astype(numpy.int64);
 
-                    k = int(numpy.random.rand() * len(targets))
+                    k = int( numpy.random.rand() * len(targets) );
 
                     print( "Targets for x=", x[0][k] );
-                    ref = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in targets[k].tolist() ]
-                    print( ''.join(ref) )
+                    print( ''.join([ vocab_lst[o] + ' ' for o in targets[k].tolist() ] ) )
                     print( "Prediction " );
-                    hyp = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in preds[k].tolist() ]
-                    print( ''.join(hyp) )
-                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))  #Bi-Gram BLEU Score     #Corresponds to Bi-gram scores
-                    print( scores_prediction )
+                    print( ''.join([ vocab_lst[o] + ' ' for o in preds[k].tolist() ] ) )
 
-                if saveto and numpy.mod(uidx, save_freq) == 0:
+
+                if saveto and numpy.mod(uidx, saveFreq) == 0:
                     print('Saving...')
 
                     if best_p is not None:
@@ -832,16 +841,17 @@ def train_lstm(
                     pickle.dump(model_options, open('%s.pkl' % saveto, 'wb'), -1)
                     print('Done')
 
-                if numpy.mod(uidx, valid_freq) == 0:
+                if numpy.mod(uidx, validFreq) == 0:
                     use_noise.set_value(0.)
                     train_err = pred_error(f_pred, prepare_data, train, kf)
                     valid_err = pred_error(f_pred, prepare_data, valid,
                                            kf_valid)
                     test_err = pred_error(f_pred, prepare_data, test, kf_test)
 
+
                     history_errs.append([valid_err, test_err])
 
-                    # if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
+                    #if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
                     #    best_p = unzip(tparams)
                     #    bad_counter = 0
 
@@ -849,7 +859,7 @@ def train_lstm(
                           'Test ', test_err)
 
 
-                    # if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
+                    #if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
                     #    bad_counter += 1
                     #    if bad_counter > patience:
                     #        print('Early Stop!')
