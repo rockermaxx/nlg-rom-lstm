@@ -167,7 +167,7 @@ def split_two_twogenerator(data, choosers):
 # Output data : S1
 def all_in_one_generator(data, choosers):
     day = ""
-    if data[4] == 0:
+    if data[4] == 0.:
         day = "today"
     else:
         day = "tomorrow"
@@ -178,7 +178,7 @@ def all_in_one_generator(data, choosers):
     if np.random.rand() < 0.5:
         return day + " is going to be " + temp_humid + " " + wind_prec + "."
     else:
-        return "it is going to be " + temp_humid + " today " + wind_prec + "."
+        return "it is going to be " + temp_humid + " " + day + " " + wind_prec + "."
 
 
 # Generates a random data point <T,H,W,P,D>
@@ -203,7 +203,7 @@ def _random_choosers():
 generators = [split_two_twogenerator, all_in_one_generator]
 
 if __name__ == "__main__":
-    num_sentences = 100000
+    num_sentences = 50000
 
     strs = []
     xs = []
