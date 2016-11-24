@@ -18,6 +18,7 @@ from theano import config
 from theano.tensor.shared_randomstreams import RandomStreams
 
 import encoder_decoder
+import nltk.translate.bleu_score as bleu
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -596,7 +597,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim = 5)
+                                  maxlen=None, xdim = 5)
         pred_probs = f_pred_prob(x, mask)
         probs[valid_index, :] = pred_probs
 
@@ -617,7 +618,7 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim = 5)
+                                  maxlen=None, xdim = 5)
         # TxN
         preds = f_pred(x, mask)
         # TxN
@@ -779,7 +780,7 @@ def train_lstm(
                 # x = TxNx3 float16
                 # m = TxN boolean
                 # y = TxN int64
-                x, mask, y = prepare_data(x, y, x_dim = inpdim)
+                x, mask, y = prepare_data(x, y, xdim = inpdim)
                 n_samples += x.shape[1]
                 # Sample.
                 #print("SAMPLE MASK");
@@ -802,7 +803,7 @@ def train_lstm(
                     example_index = example_test_batch;
                     x, mask, y = prepare_data([test[0][t] for t in example_index],
                                   numpy.array(test[1])[example_index],
-                                  maxlen=None, x_dim = inpdim)
+                                  maxlen=None, xdim = inpdim)
 
                     # Predict.. don't have to call reattach.
                     # TxN
@@ -813,9 +814,17 @@ def train_lstm(
                     k = int( numpy.random.rand() * len(targets) );
 
                     print( "Targets for x=", x[0][k] );
-                    print( ''.join([ vocab_lst[o] + ' ' for o in targets[k].tolist() ] ) )
+                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
+                    eop_idx = [i for i,x in enumerate(ref) if x=='<eop> ']
+                    print( ''.join(ref) )
                     print( "Prediction " );
-                    print( ''.join([ vocab_lst[o] + ' ' for o in preds[k].tolist() ] ) )
+                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
+                    print( ''.join(hyp) )
+                    hyp = hyp[:eop_idx[0]]
+                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))       #Corresponds to Bi-gram scores
+                    print( scores_prediction )
+
+
 
 
                 if saveto and numpy.mod(uidx, saveFreq) == 0:

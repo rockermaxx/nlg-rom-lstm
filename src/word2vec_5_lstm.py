@@ -811,12 +811,16 @@ def train_lstm(
 
                     k = int(numpy.random.rand() * len(targets))
 
-                    print("Targets for x=", x[0][k])
-                    print(''.join([word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in
-                                   targets[k].tolist()]))
-                    print("Prediction ")
-                    print(''.join(
-                        [word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in preds[k].tolist()]))
+                    print( "Targets for x=", x[0][k] );
+                    ref = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in targets[k].tolist() ]
+                    eop_idx = [i for i,x in enumerate(ref) if x=='<eop> ']
+                    print( ''.join(ref) )
+                    print( "Prediction " );
+                    hyp = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in preds[k].tolist() ]
+                    print( ''.join(hyp) )
+                    hyp = hyp[:eop_idx[0]]
+                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))  #Bi-Gram BLEU Score     #Corresponds to Bi-gram scores
+                    print( scores_prediction )
 
                 if saveto and numpy.mod(uidx, save_freq) == 0:
                     print('Saving...')
