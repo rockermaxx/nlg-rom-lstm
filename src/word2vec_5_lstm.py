@@ -162,13 +162,6 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
 
     assert mask is not None
 
-    # assert trng is not None
-    # NOT USED, REMOVE ?
-    def _slice(_x, n, dim):
-        if _x.ndim == 3:
-            return _x[:, :, n * dim:(n + 1) * dim]
-        return _x[:, n * dim:(n + 1) * dim]
-
     # Dims
     # m_ : N
     # W  : Hx(X+W+H)
@@ -179,7 +172,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # w_ : NxW
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top.
     # Becomes extremely confusing especially when the rest of the code is N major.
-    def _step_2(m_, x_, r_, h_, c_, w_):
+    def _step_2(m_, x_, h_, c_, w_):
         # Concat x_, h_ and w_ to get Nx(X+D+H) matrix
         ip_mat = tensor.concatenate([x_, w_, h_], axis=1)
 
@@ -234,37 +227,52 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         # TxNxO Last dimension one-hot sampled.
         # w = trng2.multinomial( pvals=pred );
 
-        # TODO(bitesandbytes) : Figure out how to sample from proj
+        # Sample a vector from proj for each pred; Overwrite pred
+        for i in range(h.shape[0]):
+            # Obtain proj[i]
+            cur_proj = proj[i]
 
-        # N
-        # w_nums = (tensor.switch(tensor.gt(r_, tensor.extra_ops.cumsum(pred, axis=1)), 1, 0)).sum(axis=1)
-        # pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], w_nums ] = 1.;
-        # NxD
-        # w = tensor.extra_ops.to_one_hot(w_nums, options['ydim'], dtype=config.floatX)
-        return h, c, proj.astype(config.floatX)
+            # Obtain candidates using word2vec
+            cs = word2vec_coder.get_words(cur_proj[:-3], num_words=3)
 
-    # No idea why this is here. :/
-    # NOTE: These are the inputs X. It is called state_below to allow for stacking multiple LSTMs on top of each other.
-    # And yes.. not needed anymore. This was the original Wx computation.
-    # state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
-    #               tparams[_p(prefix, 'b')])
+            # Obtain scores
+            scores = numpy.asarray([x[1] for x in cs])
+
+            # Decay scores exponentially
+            scores = numpy.exp(-scores ** 2).append(cur_proj[-3:].tolist())
+            selected = numpy.random.choice([c[0] for c in cs].append(["<comma>", "<eos>", "<eop>"]), 1, p=scores)
+            new_cur_proj = numpy.zeros(cur_proj.shape)
+            if selected == "<comma>":
+                new_cur_proj[-3] = 1.
+            elif selected == "<eos>":
+                new_cur_proj[-2] = 1.
+            elif selected == "<eop>":
+                new_cur_proj[-1] = 1.
+            else:
+                new_cur_proj[:-3] = word2vec_coder.get_model_feature(selected)
+
+            proj[i] = new_cur_proj
+
+        return h, c, proj
 
     # state_below = trng.multinomial(pvals=state_below);
     dim_proj = options['dim_proj']
     word_size = options['ydim']
-    rands = trng.uniform((nsteps, state_below.shape[1], word_size))
 
-    # TODO(bitesandbytes) : Change this to FOR loop.
-    rval, updates = theano.scan(_step_2,
-                                sequences=[mask, state_below, rands],
-                                outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size)
-                                              ],
-                                name=_p(prefix, '_layers'),
-                                n_steps=nsteps)
+    op_sentences = numpy.zeros((nsteps, n_samples, word_size))
+    prev_h = numpy.zeros((n_samples, dim_proj))
+    prev_c = numpy.zeros((n_samples, dim_proj))
+    prev_words = numpy.zeros((n_samples, word_size))
+
+    for t in range(nsteps):
+        h, c, words = _step_2(mask[t], state_below[t], prev_h, prev_c, prev_words)
+        op_sentences[t] = words
+        prev_c = c
+        prev_h = h
+        prev_words = words
+
     # Return the words.
-    return rval[2]
+    return op_sentences
 
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
@@ -275,12 +283,6 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         n_samples = 1
 
     assert mask is not None
-
-    # NOT USED, REMOVE ?
-    def _slice(_x, n, dim):
-        if _x.ndim == 3:
-            return _x[:, :, n * dim:(n + 1) * dim]
-        return _x[:, n * dim:(n + 1) * dim]
 
     # Dims
     # m_ : N
@@ -515,7 +517,7 @@ def build_model(tparams, options):
     x = tensor.tensor3('x', dtype=config.floatX)
     # TxN float( logically boolean )
     mask = tensor.matrix('mask', dtype=config.floatX)
-    # TxNxD int64
+    # TxNxD float
     y = tensor.matrix('y', dtype=config.floatX)
 
     n_timesteps = x.shape[0]

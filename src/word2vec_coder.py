@@ -15,6 +15,10 @@ def get_words(vec, num_words=2):
     return model.similar_by_vector(vec[:-3], topn=num_words)
 
 
+# Returns model.vector_size dim feature vector
+def get_model_feature(word):
+    return model[word]
+
 def _read_words(filename):
     with tf.gfile.GFile(filename, "r") as f:
         return filter(None, f.read().decode("utf-8").replace(".", " <eos>").
