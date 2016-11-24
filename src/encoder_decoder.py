@@ -65,7 +65,7 @@ def get_raw_data(xs, ys, train_frac=0.7, val_frac=0.2, test_frac=0.1):
 
 # Input - seqs: num_samples*3, labels: num_samples*[list]
 # Return X:maxlen*num_samples*3, X_mask: max_len*num_samples, labels: maxlen*num_samples
-def prepare_data(seqs, labels, maxlen=None):
+def prepare_data(seqs, labels, maxlen=None, xdim=3):
     """Create the matrices from the datasets.
 
     This pad each sequence to the same length: the length of the
@@ -90,7 +90,7 @@ def prepare_data(seqs, labels, maxlen=None):
         maxlen = 40
 
     # Pad and compute masks
-    ret_X = np.zeros((maxlen, len(seqs), 3))
+    ret_X = np.zeros((maxlen, len(seqs), xdim))
     mask_X = np.zeros((maxlen, len(seqs)))
     labels_X = np.zeros((maxlen, len(seqs)))
     for k in range(len(seqs)):
