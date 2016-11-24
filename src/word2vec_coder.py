@@ -19,15 +19,17 @@ def get_words(vec, num_words=2):
 def get_model_feature(word):
     return model[word]
 
+
 def _read_words(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        return filter(None, f.read().decode("utf-8").encode("ascii").replace(".", " <eos>").
+        return filter(None, f.read().decode("utf-8").encode("ascii").replace(".", " <eos> ").
                       replace(", ", " <comma> ").replace("\n", " <eop> ").split())
 
 
 def _read_sentences(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        s = f.read().decode("utf-8").encode("ascii").replace(".", " <eos>").replace(", ", " <comma> ").replace("\n", " <eop><EOP_TAG>")
+        s = f.read().decode("utf-8").encode("ascii").replace(".", " <eos> ").replace(", ", " <comma> "). \
+            replace("\n", " <eop> <EOP_TAG>")
         return filter(None, s.split("<EOP_TAG>"))
 
 
@@ -53,10 +55,10 @@ def _generate_vector_map(words):
 
 def _init_word2vec(load=False):
     global model
-    #model = word2vec.Word2Vec.load_word2vec_format('../models/GoogleNews-vectors-negative300.bin', binary=True)
-    #model = word2vec.Word2Vec.load_word2vec_format('/dev/shm/GoogleNews-vectors-negative300.bin', binary=True)
+    # model = word2vec.Word2Vec.load_word2vec_format('../models/GoogleNews-vectors-negative300.bin', binary=True)
+    # model = word2vec.Word2Vec.load_word2vec_format('/dev/shm/GoogleNews-vectors-negative300.bin', binary=True)
     model = word2vec.Word2Vec.load('../models/norm.bin')
-    #model.init_sims(replace=True)
+    # model.init_sims(replace=True)
 
 
 def build_vocab(filename):
@@ -126,6 +128,12 @@ def prepare_data(seqs, labels, maxlen=40, x_dim=3):
 
     This swap the axis!
     """
+    # Find out maxlen if maxlen=None
+    if maxlen is None:
+        maxlen = 0
+        for o_seq in labels:
+            maxlen = np.max([len(o_seq), maxlen])
+
     # Trim all output seqs to have only maxlen steps
     Iseqs = []
     Oseqs = []
