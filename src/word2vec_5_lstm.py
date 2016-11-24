@@ -161,6 +161,8 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         n_samples = 1
 
     assert mask is not None
+    def sigmoid(x):
+        return 1./(1. + exp(x))
 
     # Dims
     # m_ : N
@@ -174,23 +176,20 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # Becomes extremely confusing especially when the rest of the code is N major.
     def _step_2(m_, x_, h_, c_, w_):
         # Concat x_, h_ and w_ to get Nx(X+D+H) matrix
-        ip_mat = tensor.concatenate([x_, w_, h_], axis=1)
+        ip_mat = numpy.concatenate([x_, w_, h_], axis=1)
 
         # Compute forget gate values
         # f : NxH matrix
-        f = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
+        f = sigmoid(numpy.dot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
         # f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
         # Compute input gate values
         # i : NxH matrix
-        i = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][1], axes=[1, 1]) + tparams['bias'][1, :][None, :])
+        i = sigmoid(numpy.dot(ip_mat, tparams['weight'][1], axes=[1, 1]) + tparams['bias'][1, :][None, :])
         # i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
 
         # c_new : NxH matrix
-        c_new = tensor.tanh(
-            tensor.tensordot(ip_mat, tparams['weight'][2], axes=[1, 1]) + tparams['bias'][2, :][None, :])
+        c_new = numpy.tanh(numpy.dot(ip_mat, tparams['weight'][2], axes=[1, 1]) + tparams['bias'][2, :][None, :])
         # c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
@@ -201,8 +200,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
 
         # Compute new hidden state
         # h : NxH
-        h = tensor.nnet.sigmoid(
-            tensor.tensordot(ip_mat, tparams['weight'][3], axes=[1, 1]) + tparams['bias'][3, :][None, :]) * tensor.tanh(
+        h = sigmoid(numpy.dot(ip_mat, tparams['weight'][3], axes=[1, 1]) + tparams['bias'][3, :][None, :]) * numpy.tanh(
             c)
         # h = tensor.nnet.sigmoid(
         #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
@@ -212,7 +210,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         # Predict next vector here.
         # U = DxH.
         # B = D.
-        proj = tensor.tensordot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
+        proj = numpy.dot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
 
         # Not used for word2vec implementations
         # pred = NxD
@@ -258,6 +256,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # state_below = trng.multinomial(pvals=state_below);
     dim_proj = options['dim_proj']
     word_size = options['ydim']
+    print("nsteps=%0.4f, n_samples=%0.4f, word_size = %0.4f" % (nsteps, n_samples, word_size))
 
     op_sentences = numpy.zeros((nsteps, n_samples, word_size))
     prev_h = numpy.zeros((n_samples, dim_proj))
@@ -657,7 +656,7 @@ def train_lstm(
         disp_freq=10,  # Display to stdout the training progress every N updates
         decay_c=0.,  # Weight decay for the classifier applied to the U weights.
         lrate=0.00005,  # Learning rate for sgd (not used for adadelta and rmsprop)
-        n_words=43,  # Vocabulary size
+        n_words=303,  # Vocabulary size
         optimizer=adadelta,
         # sgd, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and
         # decaying learning rate).
@@ -692,11 +691,6 @@ def train_lstm(
     # (N*[5-dim], N*[[D-dim]])
     train, valid, test, vocab = word2vec_coder.get_raw_data("../data/complex_xs_50000.txt",
                                                             "../data/complex_targets_50000.txt")
-    vocab_lst = [''] * (len(vocab.items()) + 2)
-    for w, i in vocab.items():
-        print(i)
-        vocab_lst[i] = w
-
     prepare_data = word2vec_coder.prepare_data
 
     # Chosen as |num words| + 1 (0 -> no word | empty)

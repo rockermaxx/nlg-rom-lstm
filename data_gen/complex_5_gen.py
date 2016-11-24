@@ -203,7 +203,7 @@ def _random_choosers():
 generators = [split_two_twogenerator, all_in_one_generator]
 
 if __name__ == "__main__":
-    num_sentences = 100000
+    num_sentences = 50000
 
     strs = []
     xs = []
@@ -215,8 +215,8 @@ if __name__ == "__main__":
         choosers.append(chooser)
         strs.append(random.choice(generators)(x, chooser))
 
-    f1 = file("data/complex_targets_" + str(num_sentences) + ".txt", "w")
-    f2 = file("data/complex_xs_" + str(num_sentences) + ".txt", "w")
+    f1 = file("../data/complex_targets_" + str(num_sentences) + ".txt", "w")
+    f2 = file("../data/complex_xs_" + str(num_sentences) + ".txt", "w")
 
     for n in range(len(strs)):
         f1.write(strs[n] + "\n")

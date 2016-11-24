@@ -21,13 +21,13 @@ def get_model_feature(word):
 
 def _read_words(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        return filter(None, f.read().decode("utf-8").replace(".", " <eos>").
+        return filter(None, f.read().decode("utf-8").encode("ascii").replace(".", " <eos>").
                       replace(", ", " <comma> ").replace("\n", " <eop> ").split())
 
 
 def _read_sentences(filename):
     with tf.gfile.GFile(filename, "r") as f:
-        s = f.read().decode("utf-8").replace(".", " <eos>").replace(", ", " <comma> ").replace("\n", " <eop><EOP_TAG>")
+        s = f.read().decode("utf-8").encode("ascii").replace(".", " <eos>").replace(", ", " <comma> ").replace("\n", " <eop><EOP_TAG>")
         return filter(None, s.split("<EOP_TAG>"))
 
 
@@ -51,10 +51,12 @@ def _generate_vector_map(words):
     return vec_map
 
 
-def _init_word2vec():
+def _init_word2vec(load=False):
     global model
-    model = word2vec.Word2Vec.load_word2vec_format('../models/GoogleNews-vectors-negative300.bin', binary=True)
-    model.init_sims(replace=True)
+    #model = word2vec.Word2Vec.load_word2vec_format('../models/GoogleNews-vectors-negative300.bin', binary=True)
+    #model = word2vec.Word2Vec.load_word2vec_format('/dev/shm/GoogleNews-vectors-negative300.bin', binary=True)
+    model = word2vec.Word2Vec.load('../models/norm.bin')
+    #model.init_sims(replace=True)
 
 
 def build_vocab(filename):
@@ -64,6 +66,7 @@ def build_vocab(filename):
     count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
 
     words, _ = list(zip(*count_pairs))
+    print words
 
     return _generate_vector_map(words)
 
@@ -84,7 +87,7 @@ def get_raw_data(xs, ys, train_frac=0.7, val_frac=0.2, test_frac=0.1):
     _init_word2vec()
 
     # word -> w2v vector  mapping
-    vocab, = build_vocab(ys)
+    vocab = build_vocab(ys)
 
     # [sentence]
     sentences = _read_sentences(ys)
