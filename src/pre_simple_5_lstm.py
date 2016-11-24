@@ -815,12 +815,10 @@ def train_lstm(
 
                     print( "Targets for x=", x[0][k] );
                     ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
-                    eop_idx = [i for i,x in enumerate(ref) if x=='<eop> ']
                     print( ''.join(ref) )
                     print( "Prediction " );
                     hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
                     print( ''.join(hyp) )
-                    hyp = hyp[:eop_idx[0]]
                     scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))       #Corresponds to Bi-gram scores
                     print( scores_prediction )
 

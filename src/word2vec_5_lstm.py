@@ -814,12 +814,10 @@ def train_lstm(
 
                     print( "Targets for x=", x[0][k] );
                     ref = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in targets[k].tolist() ]
-                    eop_idx = [i for i,x in enumerate(ref) if x=='<eop> ']
                     print( ''.join(ref) )
                     print( "Prediction " );
                     hyp = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in preds[k].tolist() ]
                     print( ''.join(hyp) )
-                    hyp = hyp[:eop_idx[0]]
                     scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))  #Bi-Gram BLEU Score     #Corresponds to Bi-gram scores
                     print( scores_prediction )
 
