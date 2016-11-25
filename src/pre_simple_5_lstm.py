@@ -19,6 +19,9 @@ from theano.tensor.shared_randomstreams import RandomStreams
 
 import encoder_decoder
 import nltk.translate.bleu_score as bleu
+import pickle
+
+corpus_data = pickle.load(open('../data/Corpus.pkl'))
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -646,6 +649,14 @@ def reattach_data( x, y, inpsize=22 ):
     # TxNx(X+W)
     return numpy.concatenate( (x, x_part), axis=2 );
 
+def bleu_scores(ref, hyp, n=1):
+    #n-gram scores for translation
+    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    # Grammar scores for hypothesis TRI_GRAM
+    grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
+
+    return translation_bleu, grammar_bleu
+
 def train_lstm(
         dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
@@ -819,8 +830,9 @@ def train_lstm(
                     print( "Prediction " );
                     hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
                     print( ''.join(hyp) )
-                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))       #Corresponds to Bi-gram scores
-                    print( scores_prediction )
+                    sent_bleu,gram_bleu = bleu_scores(ref,hyp)
+                    print(sent_bleu)
+                    print(gram_bleu)
 
 
 
