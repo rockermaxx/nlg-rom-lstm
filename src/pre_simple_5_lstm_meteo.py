@@ -102,8 +102,8 @@ def init_params(options):
                                               params,
                                               prefix=options['encoder'])
     # classifier
-    params['U'] = 0.01 * numpy.random.randn(options['ydim'], options['dim_proj']).astype(config.floatX)
-    params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
+    params['U'] = 0.01 * numpy.random.randn(options['memdim'] + 1, options['dim_proj']).astype(config.floatX)
+    params['b'] = numpy.zeros((options['memdim'] + 1,)).astype(config.floatX)
 
     params['U_context'] = 0.01 * numpy.random.randn(options['ydim'], options['dim_proj']).astype(config.floatX)
     params['b_context'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
@@ -231,17 +231,16 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         context = tensor.tensordot( h, tparams['U'], axes=[1,1] ) + tparams['b'][None, :]
 
         y_old = tensor.tensordot( h, tparams['U_context'], axes=[1,1] ) + tparams['b_context'][None, :]
-        y_old = tensor.nnet.softmax(y_old)
+        #y_old = tensor.nnet.softmax(y_old)
 
         # pred = NxO
         #pred = tensor.nnet.softmax( proj );
         # Nx(M+1)
-        context = tensor.nnet.softmax(context)
+        #context = tensor.nnet.softmax(context)
 
         #temp: NxW
-        y = tensor.tensordot(context[:,:-1], memory, axes=[1,0]) + context[:, -1][:, None]*y_old
+        y = tensor.nnet.softmax( ( tensor.sum(context[:, :-1, None ] * memory, axis=1) + context[:, -1][:, None] * y_old ) / options['sample_temperature'] )
         #temp = tensor.sum(temp)
-
 
         # ArgMax?
         # pred[ T.arange(pred.shape[0])[:,None], T.arange(pred.shape[1])[None,:], pred.argmax( axis=2 ) ] = 1.;
@@ -250,7 +249,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         #w = trng2.multinomial( pvals=pred );
 
         # N
-        w_nums = ( tensor.switch( tensor.gt( r_, tensor.extra_ops.cumsum( pred, axis=1 ) ), 1, 0 ) ).sum( axis=1 );
+        w_nums = ( tensor.switch( tensor.gt( r_, tensor.extra_ops.cumsum( y, axis=1 ) ), 1, 0 ) ).sum( axis=1 );
         #pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], w_nums ] = 1.;
         # NxW
         w = tensor.extra_ops.to_one_hot( w_nums, options['ydim'], dtype=config.floatX)
@@ -269,10 +268,14 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     dim_proj = options['dim_proj']
     word_size = options['ydim']
     rands = trng.uniform( (nsteps,state_below.shape[1],word_size) );
+    w_0 = tensor.alloc(numpy_floatX(0.),n_samples, word_size-1);
+    w_0_part = tensor.alloc( numpy_floatX(1.), n_samples, 1 );
+    w_0 = tensor.concatenate( [w_0_part, w_0], axis=1 );
     rval, updates = theano.scan(_step_2,
                                 sequences=[mask, state_below, rands],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
                                               tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
+                                              w_0,
                                               tensor.alloc(numpy_floatX(0.), n_samples, word_size),
                                               ],
                                 name=_p(prefix, '_layers'),
@@ -343,15 +346,15 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None, memory=N
         context = tensor.tensordot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
 
         y_old = tensor.tensordot(h, tparams['U_context'], axes=[1, 1]) + tparams['b_context'][None, :]
-        y_old = tensor.nnet.softmax(y_old)
+        #y_old = tensor.nnet.softmax(y_old)
 
         # pred = NxO
         # pred = tensor.nnet.softmax( proj );
         # Nx(M+1)
-        context = tensor.nnet.softmax(context)
+        #context = tensor.nnet.softmax(context)
 
         # temp: NxW
-        y = tensor.tensordot(context[:, :-1], memory, axes=[1, 0]) + context[:, -1][:, None] * y_old
+        y = tensor.nnet.softmax( tensor.sum(context[:, :-1, None ] * memory, axis=1) + context[:, -1][:, None] * y_old )
         # temp = tensor.sum(temp)
 
         return h, c, y
@@ -407,7 +410,7 @@ def sgd(lr, tparams, grads, x, mask, y, cost):
     return f_grad_shared, f_update
 
 
-def adadelta(lr, tparams, grads, x, mask, y, cost):
+def adadelta(lr, tparams, grads, x, mask, y, memory, cost):
     """
     An adaptive learning rate optimizer
 
@@ -450,7 +453,7 @@ def adadelta(lr, tparams, grads, x, mask, y, cost):
     rg2up = [(rg2, 0.95 * rg2 + 0.05 * (g ** 2))
              for rg2, g in zip(running_grads2, grads)]
 
-    f_grad_shared = theano.function([x, mask, y], cost, updates=zgup + rg2up,
+    f_grad_shared = theano.function([x, mask, y, memory], cost, updates=zgup + rg2up,
                                     name='adadelta_f_grad_shared')
 
     updir = [-tensor.sqrt(ru2 + 1e-6) / tensor.sqrt(rg2 + 1e-6) * zg
@@ -545,8 +548,8 @@ def build_model(tparams, options):
     mask = tensor.matrix('mask', dtype=config.floatX)
     # TxN int64
     y = tensor.matrix('y', dtype='int64')
-    # MxW float( Read Only Memory )
-    memory = tensor.matrix('memory', dtype=config.floatX)
+    # NxMxW float( Read Only Memory )
+    memory = tensor.tensor3('memory', dtype=config.floatX)
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
@@ -558,7 +561,7 @@ def build_model(tparams, options):
     #
 
     # TxNxH.
-    proj = get_layer(options['encoder'])[1](tparams, x, options,
+    pred = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
 
                                             mask=mask,memory=memory)
@@ -583,23 +586,23 @@ def build_model(tparams, options):
     # H = Hidden state size.
     # NOTE: IT'S 'OxH' NOT 'HxO'. DON'T MENTION THINGS YOU ARE NOT
     # SURE ABOUT! I JUST WASTED AN HOUR.
-    if options['encoder'] == 'lstm':
+    """if options['encoder'] == 'lstm':
         #proj = (proj * mask[:, :, None]).sum(axis=0)
         #proj = proj / mask.sum(axis=0)[:, None]
         # B = O
 
         # TxNxO.
-        proj = tensor.tensordot( proj, tparams['U'], axes=[2,1] ) + tparams['b'][None, None, :];
-
+        #proj = tensor.tensordot( proj, tparams['U'], axes=[2,1] ) + tparams['b'][None, None, :];
+    """
     # TODO(saipraveenb): Check if we need dropout option.
     #if options['use_dropout']:
     #    proj = dropout_layer(proj, use_noise, trng)
 
     # pred = TxNxO
     #pred = tensor.nnet.softmax( proj );
-    exp_pred = tensor.exp( proj );
+    #exp_pred = tensor.exp( proj );
     # TxNxO ( last dimension softmaxed )
-    pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
+    #pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
 
     f_pred_prob = theano.function([x, mask, memory], pred, name='f_pred_prob')
@@ -642,7 +645,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     return probs
 
 
-def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
+def pred_error(f_pred, prepare_data, data, iterator, verbose=False, mapping=None, max_mapping=None, x_dim=5):
     """
     Just compute the error
     f_pred: Theano fct computing the prediction
@@ -650,11 +653,11 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     """
     valid_err = 0
     for _, valid_index in iterator:
-        x, mask, y = prepare_data([data[0][t] for t in valid_index],
+        x, mask, y, memory = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim = 5)
+                                  maxlen=None, x_dim = x_dim, mapping=mapping, max_mapping=max_mapping)
         # TxN
-        preds = f_pred(x, mask)
+        preds = f_pred(x, mask, memory)
         # TxN
         targets = y;
         #print("TARGET: ")
@@ -704,13 +707,13 @@ def train_lstm(
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
-        ydim=187, # Output dimensions.
+        ydim=176, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
         exampleFreq=100,
-        inpdim=5,
-        sample_temperature=0.33,
-        memdim=3
+        inpdim=561,
+        sample_temperature=0.1,
+        memdim=18
 ):
     x_size = inpdim + ydim;
     # Model options
@@ -720,8 +723,8 @@ def train_lstm(
     print('Loading data')
 
     # (N*[x], N*[y])
-    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/complex_xs_50000.txt",
-                                                      "../data/complex_targets_50000.txt")
+    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/corpus/inputs_x.txt",
+                                                      "../data/corpus/targets_x.txt")
     vocab_lst = [''] * ( len(vocab.items()) + 2 );
     for w,i in vocab.items():
         print(i);
@@ -752,7 +755,7 @@ def train_lstm(
 
     # use_noise is for dropout
     (use_noise, x, mask,
-     y, f_pred_prob, f_pred, cost) = build_model(tparams, model_options)
+     y, memory, f_pred_prob, f_pred, cost ) = build_model(tparams, model_options)
 
     if decay_c > 0.:
         decay_c = theano.shared(numpy_floatX(decay_c), name='decay_c')
@@ -761,14 +764,14 @@ def train_lstm(
         weight_decay *= decay_c
         cost += weight_decay
 
-    f_cost = theano.function([x, mask, y], cost, name='f_cost')
+    f_cost = theano.function([x, mask, y, memory], cost, name='f_cost')
 
     grads = tensor.grad(cost, wrt=list(tparams.values()))
-    f_grad = theano.function([x, mask, y], grads, name='f_grad')
+    f_grad = theano.function([x, mask, y, memory], grads, name='f_grad')
 
     lr = tensor.scalar(name='lr')
     f_grad_shared, f_update = optimizer(lr, tparams, grads,
-                                        x, mask, y, cost)
+                                        x, mask, y, memory, cost)
 
     print('Optimization')
 
@@ -815,7 +818,8 @@ def train_lstm(
                 # x = TxNx3 float16
                 # m = TxN boolean
                 # y = TxN int64
-                x, mask, y, memory = prepare_data(x, y, x_dim=inpdim, mapping=vocab)
+                x, mask, y, memory = prepare_data(x, y, x_dim=inpdim, mapping=vocab, max_mapping=ydim)
+                #print("MEMORY SIZE:", memory.shape );
                 n_samples += x.shape[1]
                 # Sample.
                 #print("SAMPLE MASK");
@@ -838,20 +842,25 @@ def train_lstm(
                     example_index = example_test_batch;
                     x, mask, y, memory = prepare_data([test[0][t] for t in example_index],
                                   numpy.array(test[1])[example_index],
-                                  maxlen=None, x_dim = inpdim, mapping=vocab)
+                                  maxlen=None, x_dim = inpdim, mapping=vocab, max_mapping=ydim)
 
                     # Predict.. don't have to call reattach.
-                    # TxN
-                    preds = f_pred(x, mask, memory).transpose().astype(numpy.int64);
-                    # TxN
+                    # SxNxT
+                    preds = numpy.zeros( 10, x.shape[1], x.shape[0] )
+                    for i in range(0,10):
+                        preds[i] = f_pred(x, mask, memory).transpose().astype(numpy.int64);
+                    preds = preds.transpose([1,0,2]);
+                    # NxT
                     targets = y.transpose().astype(numpy.int64);
 
                     k = int( numpy.random.rand() * len(targets) );
 
-                    print( "Targets for x=", x[0][k] );
-                    print( ''.join([ vocab_lst[o] + ' ' for o in targets[k].tolist() ] ) )
-                    print( "Prediction " );
-                    print( ''.join([ vocab_lst[o] + ' ' for o in preds[k].tolist() ] ) )
+                    for a,b,c in zip( x[0], targets, preds ):
+                        print( "Targets for x=", a );
+                        print( ''.join([ vocab_lst[o] + ' ' for o in b.tolist() ] ) )
+                        for p in c:
+                            print( "Prediction " );
+                            print( ''.join([ vocab_lst[o] + ' ' for o in p.tolist() ] ) )
 
 
                 if saveto and numpy.mod(uidx, saveFreq) == 0:
@@ -867,10 +876,10 @@ def train_lstm(
 
                 if numpy.mod(uidx, validFreq) == 0:
                     use_noise.set_value(0.)
-                    train_err = pred_error(f_pred, prepare_data, train, kf)
+                    train_err = pred_error(f_pred, prepare_data, train, kf, mapping=vocab, max_mapping=ydim, x_dim=inpdim)
                     valid_err = pred_error(f_pred, prepare_data, valid,
-                                           kf_valid)
-                    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+                                           kf_valid, mapping=vocab, max_mapping=ydim, x_dim=inpdim)
+                    test_err = pred_error(f_pred, prepare_data, test, kf_test, mapping=vocab, max_mapping=ydim, x_dim=inpdim)
 
 
                     history_errs.append([valid_err, test_err])
@@ -906,9 +915,9 @@ def train_lstm(
 
     use_noise.set_value(0.)
     kf_train_sorted = get_minibatches_idx(len(train[0]), batch_size)
-    train_err = pred_error(f_pred, prepare_data, train, kf_train_sorted)
-    valid_err = pred_error(f_pred, prepare_data, valid, kf_valid)
-    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+    train_err = pred_error(f_pred, prepare_data, train, kf_train_sorted, mapping=vocab, max_mapping=ydim, x_dim = inpdim)
+    valid_err = pred_error(f_pred, prepare_data, valid, kf_valid, mapping=vocab, max_mapping=ydim, x_dim = inpdim)
+    test_err = pred_error(f_pred, prepare_data, test, kf_test, mapping=vocab, max_mapping=ydim, x_dim = inpdim)
 
     print('Train ', train_err, 'Valid ', valid_err, 'Test ', test_err)
     if saveto:
@@ -925,6 +934,7 @@ def train_lstm(
 if __name__ == '__main__':
     # See function train for all possible parameter and there definition.
     train_lstm(
-        max_epochs=100,
+        max_epochs=1000,
         test_size=500,
+        reload_model=True,
     )
