@@ -12,6 +12,10 @@ from theano import config
 from theano.tensor.shared_randomstreams import RandomStreams
 
 import word2vec_coder
+import nltk.translate.bleu_score as bleu
+import pickle
+
+corpus_data = pickle.load(open('../data/Corpus.pkl'))
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -659,6 +663,14 @@ def reattach_data(x, y):
     # TxNx(X+D)
     return numpy.concatenate((x, y), axis=2)
 
+def bleu_scores(ref, hyp, n=1):
+    #n-gram scores for translation
+    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    # Grammar scores for hypothesis TRI_GRAM
+    grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
+
+    return translation_bleu, grammar_bleu
+
 
 def sample_word(vec):
     print("sample_word(vec):vec.shape : "+str(vec.shape))
@@ -843,10 +855,16 @@ def train_lstm(
                     k = int(numpy.random.rand() * len(targets))
                     print("some_target.shape() : "+str(targets[k].shape))
 
-                    print("Targets for x=", x[0][k])
-                    print(''.join([sample_word(o) + ' ' for o in targets[k].tolist()]))
-                    print("Prediction ")
-                    print(''.join([sample_word(o) + ' ' for o in preds[k].tolist()]))
+                    print( "Targets for x=", x[0][k] );
+                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
+                    print( ''.join(ref) )
+                    print( "Prediction " );
+                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
+                    print( ''.join(hyp) )
+                    sent_bleu,gram_bleu = bleu_scores(ref,hyp)
+                    print(sent_bleu)
+                    print(gram_bleu)
+
 
                 if saveto and numpy.mod(uidx, save_freq) == 0:
                     print('Saving...')
