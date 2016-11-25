@@ -150,8 +150,10 @@ def prepare_data(seqs, labels, maxlen=None, x_dim = 3, mapping=None, max_mapping
 
 
 if __name__ == "__main__":
-    train, val, test, vocab = get_raw_data("../data/corpus/inputs_x.txt", "../data/corpus/targets_x.txt")
-    c = _read_sentences("../data/corpus/targets_x.txt")
+    #train, val, test, vocab = get_raw_data("../data/corpus/inputs_x.txt", "../data/corpus/targets_x.txt")
+    #c = _read_sentences("../data/corpus/targets_x.txt")
+    train, val, test, vocab = get_raw_data("../data/xs1000.txt", "../data/targets1000.txt")
+    c = _read_sentences("../data/targets1000.txt")
     print np.array(train[0]);
     # print val;
     # print test;

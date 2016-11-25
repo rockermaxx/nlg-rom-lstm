@@ -195,7 +195,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top. Becomes extremely confusing especially when the rest
     # of the code is N major.
     # TODO(bitesandbytes) Use _p( prefix, "weight" ) other wise we can't stack LSTMs properly.
-    def _step_2(m_, x_, r_, h_, c_, w_, y_):
+    def _step_2(m_, x_, r_, h_, c_, w_, y_, c2_):
         # Concat x_, h_ and w_ to get Nx(X+W+H) matrix
         ip_mat = tensor.concatenate([x_, w_, h_], axis=1 )
 
@@ -257,7 +257,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         #pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], w_nums ] = 1.;
         # NxW
         w = tensor.extra_ops.to_one_hot( w_nums, options['ydim'], dtype=config.floatX)
-        return h, c, w.astype(config.floatX), y
+        return h, c, w.astype(config.floatX), y, context
 
 
     # No idea why this is here. :/
@@ -281,11 +281,12 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
                                               tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
                                               w_0,
                                               tensor.alloc(numpy_floatX(0.), n_samples, word_size),
+                                              tensor.alloc(numpy_floatX(0.), n_samples, options["memdim"] + 1),
                                               ],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
     # Return the words.
-    return rval[2]
+    return rval[2], rval[4]
 
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None, memory=None):
@@ -574,8 +575,8 @@ def build_model(tparams, options):
     x2 = tensor.tensor3('x_2', dtype=config.floatX)
     # TxN float( logically boolean )
     mask2 = tensor.matrix('mask_2', dtype=config.floatX)
-    # Stochastic forward pass.
-    spass = get_layer(options['encoder'])[2](tparams, x2, options,
+    # Stochastic forward pass to get the word vectors and the memory attention.
+    spass, cs = get_layer(options['encoder'])[2](tparams, x2, options,
                                             prefix=options['encoder'],
                                             mask=mask2,
                                             trng=trng,memory=memory)
@@ -613,6 +614,7 @@ def build_model(tparams, options):
     theano.config.exception_verbosity='high'
     #x_2 =
     f_pred = theano.function([x2, mask2, memory], spass.argmax(axis=2), name='f_pred')
+    f_cs = theano.function([x2,mask2,memory], cs, name='f_cs')
 
     off = 1e-8
     if pred.dtype == 'float16':
@@ -622,7 +624,7 @@ def build_model(tparams, options):
     cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], y ] * mask + off ).sum()
 
 
-    return use_noise, x, mask, y, memory, f_pred_prob, f_pred, cost
+    return use_noise, x, mask, y, memory, f_pred_prob, f_pred, f_cs, cost
 
 
 def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
@@ -780,7 +782,7 @@ def train_lstm(
 
     # use_noise is for dropout
     (use_noise, x, mask,
-     y, memory, f_pred_prob, f_pred, cost ) = build_model(tparams, model_options)
+     y, memory, f_pred_prob, f_pred, f_cs, cost ) = build_model(tparams, model_options)
 
     if decay_c > 0.:
         decay_c = theano.shared(numpy_floatX(decay_c), name='decay_c')
@@ -880,26 +882,36 @@ def train_lstm(
                     # Predict.. don't have to call reattach.
                     # SxNxT
                     preds = numpy.zeros(( 3, x.shape[1], x.shape[0] ))
+		    # SxNxTxC
+		    contexts = numpy.zeros(( 3, x.shape[1], x.shape[0], memdim + 1))
                     for i in range(0,3):
                         preds[i] = f_pred(x, mask, memory).transpose().astype(numpy.int64);
+			contexts[i] = f_cs(x, mask, memory).transpose([1,0,2]);
+		    # NxSxT
                     preds = preds.transpose([1,0,2]).astype(numpy.int64);
-                    # NxT
+                    # NxSxTxC
+                    contexts = contexts.transpose([1,0,2,3]);
+		    
+		    # NxSxT
                     targets = y.transpose().astype(numpy.int64);
 
                     k = int( numpy.random.rand() * len(targets) );
 
-                    for a,b,c in zip( x[0], targets, preds ):
+                    for a,b,c,d in zip( x[0], targets, preds, contexts ):
                         #print( "Targets for x=", a );
                         print("\n\nTarget= ");
                         ref = [ vocab_lst[o] + ' ' for o in b.tolist() ]
                         print( ''.join(ref) )
                         #print( "Targets for x=", a );
                         #print( ''.join([ vocab_lst[o] + ' ' for o in b.tolist() ] ) )
-                        for p in c:
+                        for p,q in zip(c,d):
                             #print( "Prediction " );
                             hyp = [ vocab_lst[o] + ' ' for o in p.tolist() ]
                             print( "Prediction " );
                             print( ''.join(hyp) );
+			    print( "Memory attention: " );
+			    for j in range(0,q.shape[1]):
+				print(q[:,j])
                             sent_bleu,gram_bleu = bleu_scores(ref,hyp)
                             num += 1;
                             avg_sent += sent_bleu;
@@ -984,6 +996,6 @@ if __name__ == '__main__':
     train_lstm(
         max_epochs=1000,
         test_size=500,
-        saveto='lstm_model_2.npz'
-        #reload_model=True,
+        #saveto='lstm_model.npz'
+        reload_model=True,
     )

@@ -262,11 +262,14 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     dim_proj = options['dim_proj']
     word_size = options['ydim']
     rands = trng.uniform( (nsteps,state_below.shape[1],word_size) );
+    w_0 = tensor.alloc(numpy_floatX(0.),n_samples, word_size-1);
+    w_0_part = tensor.alloc( numpy_floatX(1.), n_samples, 1 );
+    w_0 = tensor.concatenate( [w_0_part, w_0], axis=1 );
     rval, updates = theano.scan(_step_2,
                                 sequences=[mask, state_below, rands],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
                                               tensor.alloc(numpy_floatX(0.), n_samples, dim_proj),
-                                              tensor.alloc(numpy_floatX(0.), n_samples, word_size)
+                                              w_0
                                               ],
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
@@ -602,7 +605,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, xdim = 5)
+                                  maxlen=None, xdim = 3)
         pred_probs = f_pred_prob(x, mask)
         probs[valid_index, :] = pred_probs
 
@@ -623,7 +626,7 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, xdim = 5)
+                                  maxlen=None, xdim = 3)
         # TxN
         preds = f_pred(x, mask)
         # TxN
@@ -651,22 +654,34 @@ def reattach_data( x, y, inpsize=22 ):
     # TxNx(X+W)
     return numpy.concatenate( (x, x_part), axis=2 );
 
-def bleu_scores(ref, hyp, n=1):
+def bleu_scores(ref, hyp, n=3):
+    newref = [];
+    newhyp = [];
+    for r in ref:
+        if r == '<eop> ':
+            break;
+        newref.append( r )
+    for r in hyp:
+        if r == '<eop> ':
+            break;
+        newhyp.append( r )
+    print(newhyp);
+    print(newref);
     #n-gram scores for translation
-    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    translation_bleu = bleu.sentence_bleu([''.join(ref).split()],''.join(hyp).split(), weights=[float(1)/n] * n)
     # Grammar scores for hypothesis TRI_GRAM
     grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
 
     return translation_bleu, grammar_bleu
 
 def train_lstm(
-        dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
+        dim_proj=10,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
         max_epochs=10000,  # The maximum number of epoch to run
         dispFreq=10,  # Display to stdout the training progress every N updates
         decay_c=0.,  # Weight decay for the classifier applied to the U weights.
         lrate=0.00005,  # Learning rate for sgd (not used for adadelta and rmsprop)
-        n_words=43,  # Vocabulary size
+        n_words=42,  # Vocabulary size
         optimizer=adadelta,
         # sgd, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and decaying learning rate).
         encoder='lstm',  # TODO: can be removed must be lstm.
@@ -683,13 +698,13 @@ def train_lstm(
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
-        ydim=42, # Output dimensions.
+        ydim=23, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
-        exampleFreq=100,
-        inpdim=5,
+        exampleFreq=10,
+        inpdim=3,
         sample_temperature=0.33,
-        stats="stats2.txt"
+        stats="stats9.txt"
 ):
     x_size = inpdim + ydim;
     # Model options
@@ -699,8 +714,10 @@ def train_lstm(
     print('Loading data')
 
     # (N*[x], N*[y])
-    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/complex_xs_50000.txt",
-                                                      "../data/complex_targets_50000.txt")
+    #train, valid, test, vocab = encoder_decoder.get_raw_data("../data/complex_xs_50000.txt",
+    #                                                  "../data/complex_targets_50000.txt")
+    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/xs1000.txt",
+                                                      "../data/targets1000.txt")
     vocab_lst = [''] * ( len(vocab.items()) + 2 );
     for w,i in vocab.items():
         print(i);
@@ -779,7 +796,8 @@ def train_lstm(
             avg_gram = 0;
             n_samples = 0
             avg_cost = 0;
-            # Get new shuffled index for the training set.
+            cnum = 1;
+	    # Get new shuffled index for the training set.
             kf = get_minibatches_idx(len(train[0]), batch_size, shuffle=True)
 
             for _, train_index in kf:
@@ -807,6 +825,7 @@ def train_lstm(
 
                 cost = f_grad_shared(x, mask, y.astype(numpy.int64) )
                 avg_cost += cost;
+		cnum += 1;
                 f_update(lrate)
 
                 if numpy.isnan(cost) or numpy.isinf(cost):
@@ -814,12 +833,20 @@ def train_lstm(
                     return 1., 1., 1.
 
                 if numpy.mod(uidx, dispFreq) == 0:
+            	    stats_file.write('%f %f %f\n' % ( avg_cost/cnum, avg_sent/num, avg_gram/num ) )
                     print('Epoch ', eidx, 'Update ', uidx, 'Cost ', cost)
-
-                if numpy.mod(uidx, exampleFreq) == 0:
-                    num = 1;
+            	    num = 1;
                     avg_sent = 0;
                     avg_gram = 0;
+                    #n_samples = 0
+                    avg_cost = 0;
+		    cnum = 1;
+		    
+
+                if numpy.mod(uidx, exampleFreq) == 0:
+                    #num = 1;
+                    #avg_sent = 0;
+                    #avg_gram = 0;
 
                     example_index = example_test_batch;
                     x, mask, y = prepare_data([test[0][t] for t in example_index],
@@ -902,7 +929,6 @@ def train_lstm(
             print('Seen %d samples' % n_samples)
             #print('Seen %d samples' % n_samples)
             print('Avg. Cost %f' % (avg_cost/len(train[0]) ) )
-            stats_file.write('%f %f %f\n' % ( avg_cost/len(train[0]), avg_sent/num, avg_gram/num ) )
             if estop:
                 break
 

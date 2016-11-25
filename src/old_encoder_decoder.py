@@ -102,8 +102,8 @@ def prepare_data(seqs, labels, maxlen=None, xdim=3):
 
 
 if __name__ == "__main__":
-    train, val, test, vocab = get_raw_data("../data/complex_xs_50000.txt",
-                                    "../data/complex_targets_50000.txt")
+    train, val, test, vocab = get_raw_data("../data/xs1000.txt",
+                                    "../data/targets1000.txt")
     c = _read_sentences("../data/targets1000.txt")
     print np.array(train[0]);
     # print val;

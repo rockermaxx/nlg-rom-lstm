@@ -17,7 +17,7 @@ from theano import config
 #from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano.tensor.shared_randomstreams import RandomStreams
 
-import encoder_decoder
+import old_encoder_decoder as encoder_decoder
 import nltk.translate.bleu_score as bleu
 import pickle
 
@@ -278,7 +278,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
     # Return the words.
-    return rval[2]
+    return rval[2], rval[0], rval[1]
 
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
@@ -554,7 +554,7 @@ def build_model(tparams, options):
     # TxN float( logically boolean )
     mask2 = tensor.matrix('mask_2', dtype=config.floatX)
     # Stochastic forward pass.
-    spass = get_layer(options['encoder'])[2](tparams, x2, options,
+    spass, hiddens, cells = get_layer(options['encoder'])[2](tparams, x2, options,
                                             prefix=options['encoder'],
                                             mask=mask2,
                                             trng=trng)
@@ -587,7 +587,9 @@ def build_model(tparams, options):
     f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
     theano.config.exception_verbosity='high'
     #x_2 =
-    f_pred = theano.function([x2, mask2], spass.argmax(axis=2), name='f_pred')
+    ws = spass
+    f_pred = theano.function([x2, mask2], tensor.concatenate( [ws, cells, hiddens], axis=2), name='f_pred')
+    #f_cells = theano.function([x2, mask2], cells, name='f_cells')
 
     off = 1e-8
     if pred.dtype == 'float16':
@@ -612,7 +614,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim = 3)
+                                  maxlen=None, xdim = 3)
         pred_probs = f_pred_prob(x, mask)
         probs[valid_index, :] = pred_probs
 
@@ -633,7 +635,7 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None, x_dim = 3)
+                                  maxlen=None, xdim = 3)
         # TxN
         preds = f_pred(x, mask)
         # TxN
@@ -661,16 +663,29 @@ def reattach_data( x, y, inpsize=22 ):
     # TxNx(X+W)
     return numpy.concatenate( (x, x_part), axis=2 );
 
-def bleu_scores(ref, hyp, n=1):
+def bleu_scores(ref, hyp, n=3):
+    newref = [];
+    newhyp = [];
+    for r in ref:
+        if r == '<eop> ':
+            break;
+        newref.append( r )
+    for r in hyp:
+        if r == '<eop> ':
+            break;
+        newhyp.append( r )
+    print(newhyp);
+    print(newref);
     #n-gram scores for translation
-    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    translation_bleu = bleu.sentence_bleu([''.join(ref).split()],''.join(hyp).split(), weights=[float(1)/n] * n)
     # Grammar scores for hypothesis TRI_GRAM
     grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
 
     return translation_bleu, grammar_bleu
 
+
 def train_lstm(
-        dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
+        dim_proj=10,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
         max_epochs=10000,  # The maximum number of epoch to run
         dispFreq=10,  # Display to stdout the training progress every N updates
@@ -693,23 +708,24 @@ def train_lstm(
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
-        ydim=43, # Output dimensions.
+        ydim=23, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
-        exampleFreq=100,
+        exampleFreq=10,
         inpdim=3,
-        sample_temperature=0.33,
+        stats="stats8.txt",
+	sample_temperature=0.33,
 ):
     x_size = inpdim + ydim;
     # Model options
     model_options = locals().copy()
     print("model options", model_options)
-
+    stats_file = open( stats, 'w' )
     print('Loading data')
 
     # (N*[x], N*[y])
-    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/xs5000.txt",
-                                                      "../data/targets5000.txt")
+    train, valid, test, vocab = encoder_decoder.get_raw_data("../data/xs1000.txt",
+                                                      "../data/targets1000.txt")
     vocab_lst = [''] * ( len(vocab.items()) + 2 );
     for w,i in vocab.items():
         print(i);
@@ -783,7 +799,12 @@ def train_lstm(
     start_time = time.time()
     try:
         for eidx in range(max_epochs):
+            num = 1;
+            avg_sent = 0;
+            avg_gram = 0;
             n_samples = 0
+            avg_cost = 0;
+            cnum = 1;
 
             # Get new shuffled index for the training set.
             kf = get_minibatches_idx(len(train[0]), batch_size, shuffle=True)
@@ -803,7 +824,7 @@ def train_lstm(
                 # x = TxNx3 float16
                 # m = TxN boolean
                 # y = TxN int64
-                x, mask, y = prepare_data(x, y, x_dim = inpdim)
+                x, mask, y = prepare_data(x, y, xdim = inpdim)
                 n_samples += x.shape[1]
                 # Sample.
                 #print("SAMPLE MASK");
@@ -812,6 +833,8 @@ def train_lstm(
                 x = reattach_data( x, y, inpsize = ydim );
 
                 cost = f_grad_shared(x, mask, y.astype(numpy.int64))
+                avg_cost += cost;
+		cnum += 1;
                 f_update(lrate)
 
                 if numpy.isnan(cost) or numpy.isinf(cost):
@@ -819,32 +842,71 @@ def train_lstm(
                     return 1., 1., 1.
 
                 if numpy.mod(uidx, dispFreq) == 0:
+            	    stats_file.write('%f %f %f\n' % ( avg_cost/cnum, avg_sent/num, avg_gram/num ) )
                     print('Epoch ', eidx, 'Update ', uidx, 'Cost ', cost)
+            	    num = 1;
+                    avg_sent = 0;
+                    avg_gram = 0;
+                    #n_samples = 0
+                    avg_cost = 0;
+		    cnum = 1;
 
                 if numpy.mod(uidx, exampleFreq) == 0:
 
                     example_index = example_test_batch;
                     x, mask, y = prepare_data([test[0][t] for t in example_index],
                                   numpy.array(test[1])[example_index],
-                                  maxlen=None, x_dim = inpdim)
+                                  maxlen=None, xdim = inpdim)
 
                     # Predict.. don't have to call reattach.
                     # TxN
-                    preds = f_pred(x, mask).transpose().astype(numpy.int64);
+                    preds = numpy.zeros(( 3, x.shape[1], x.shape[0] ))
+                    hiddens = numpy.zeros(( 3, x.shape[1], x.shape[0], dim_proj )) 
+		    cells = numpy.zeros((3, x.shape[1], x.shape[0], dim_proj ))
+		    for i in range(0,3):
+                        al = f_pred(x, mask).transpose([1,0,2]);
+			preds[i] = al[:,:,:ydim].argmax(axis=2).astype(numpy.int64);
+			hiddens[i] = al[:,:,ydim:ydim+dim_proj]
+			cells[i] = al[:,:,ydim+dim_proj:ydim+dim_proj+dim_proj]
+			
+			
+                    preds = preds.transpose([1,0,2]).astype(numpy.int64);
+                    hiddens = hiddens.transpose([1,0,2,3]);
+                    cells = cells.transpose([1,0,2,3]);
+
                     # TxN
                     targets = y.transpose().astype(numpy.int64);
 
                     k = int( numpy.random.rand() * len(targets) );
 
-                    print( "Targets for x=", x[0][k] );
-                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
-                    print( ''.join(ref) )
-                    print( "Prediction " );
-                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
-                    print( ''.join(hyp) )
-                    sent_bleu,gram_bleu = bleu_scores(ref,hyp)
-                    print(sent_bleu)
-                    print(gram_bleu)
+                    for a,b,c,d,e in zip( x[0], targets, preds, hiddens, cells ):
+                        #print( "Targets for x=", a );
+                        print("\n\nTarget= ");
+                        ref = [ vocab_lst[o] + ' ' for o in b.tolist() ]
+                        print( ''.join(ref) )
+                        #print( "Targets for x=", a );
+                        #print( ''.join([ vocab_lst[o] + ' ' for o in b.tolist() ] ) )
+                        for p,q,r in zip(c,d,e):
+                            #print( "Prediction " );
+                            hyp = [ vocab_lst[o] + ' ' for o in p.tolist() ]
+                            print( "Prediction " );
+                            print( ''.join(hyp) );
+			    print( 'Hidden: ' );
+			    for t in range(q.shape[1]):
+				print( q[:,t] )
+ 			    print( 'Cell: ' );
+			    for t in range(r.shape[1]):
+				print( r[:,t] )
+			    
+                            sent_bleu,gram_bleu = bleu_scores(ref,hyp)
+                            num += 1;
+                            avg_sent += sent_bleu;
+                            avg_gram += gram_bleu;
+                            print("SENT BLEU: " + format( sent_bleu ) )
+                            print("GRAM BLEU: " + format( gram_bleu ) )
+
+                    print("Avg. SBLEU: " + format( avg_sent/num ) );
+                    print("Avg. GBLEU: " + format( avg_gram/num ) );
 
 
                 if saveto and numpy.mod(uidx, saveFreq) == 0:
@@ -858,22 +920,22 @@ def train_lstm(
                     pickle.dump(model_options, open('%s.pkl' % saveto, 'wb'), -1)
                     print('Done')
 
-                if numpy.mod(uidx, validFreq) == 0:
-                    use_noise.set_value(0.)
-                    train_err = pred_error(f_pred, prepare_data, train, kf)
-                    valid_err = pred_error(f_pred, prepare_data, valid,
-                                           kf_valid)
-                    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+                #if numpy.mod(uidx, validFreq) == 0:
+                #    use_noise.set_value(0.)
+                #    train_err = pred_error(f_pred, prepare_data, train, kf)
+                #    valid_err = pred_error(f_pred, prepare_data, valid,
+                #                           kf_valid)
+                #    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+		#
 
-
-                    history_errs.append([valid_err, test_err])
+                #    history_errs.append([valid_err, test_err])
 
                     #if best_p is None or valid_err <= numpy.array(history_errs)[:, 0].min():
                     #    best_p = unzip(tparams)
                     #    bad_counter = 0
 
-                    print('Train ', train_err, 'Valid ', valid_err,
-                          'Test ', test_err)
+                #    print('Train ', train_err, 'Valid ', valid_err,
+                #          'Test ', test_err)
 
 
                     #if len(history_errs) > patience and valid_err >= numpy.array(history_errs)[:-patience, 0].min():
@@ -899,7 +961,7 @@ def train_lstm(
 
     use_noise.set_value(0.)
     kf_train_sorted = get_minibatches_idx(len(train[0]), batch_size)
-    train_err = pred_error(f_pred, prepare_data, train, kf_train_sorted)
+    #train_err = pred_error(f_pred, prepare_data, train, kf_train_sorted)
     valid_err = pred_error(f_pred, prepare_data, valid, kf_valid)
     test_err = pred_error(f_pred, prepare_data, test, kf_test)
 
