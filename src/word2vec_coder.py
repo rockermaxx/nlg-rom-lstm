@@ -12,7 +12,7 @@ model = None
 # Input : np.array : model.vector_size+3
 # Output : [(word, match_score)]*num_words
 def get_words(vec, num_words=2):
-    return model.similar_by_vector(vec[:-3], topn=num_words)
+    return model.similar_by_vector(vec, topn=num_words)
 
 
 # Returns model.vector_size dim feature vector

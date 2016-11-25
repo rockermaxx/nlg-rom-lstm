@@ -257,17 +257,21 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
             scores = numpy.asarray([x[1] for x in cs])
 
             # Decay scores exponentially
-            scores = numpy.exp(-scores ** 2).append(cur_proj[-3:].tolist())
-            selected = numpy.random.choice([c[0] for c in cs].append(["<comma>", "<eos>", "<eop>"]), 1, p=scores)
+            scores = numpy.concatenate([numpy.exp(-scores ** 2),cur_proj[-3:].tolist()], axis=0)
+            scores.clip(min=0)
+            #print(scores.shape)
+            scores = scores / scores.sum()
+            #selected = numpy.random.choice([c[0] for c in cs].append(["<comma>", "<eos>", "<eop>"]), 1, p=scores)
+            selected = numpy.random.choice(range(len(cs)+3), 1, p=scores)
             new_cur_proj = numpy.zeros(cur_proj.shape)
-            if selected == "<comma>":
+            if selected == len(cs):
                 new_cur_proj[-3] = 1.
-            elif selected == "<eos>":
+            elif selected == len(cs)+1:
                 new_cur_proj[-2] = 1.
-            elif selected == "<eop>":
+            elif selected == len(cs)+2:
                 new_cur_proj[-1] = 1.
             else:
-                new_cur_proj[:-3] = word2vec_coder.get_model_feature(selected)
+                new_cur_proj[:-3] = word2vec_coder.get_model_feature(cs[selected][0])
 
             proj[i] = new_cur_proj
 
@@ -657,6 +661,7 @@ def reattach_data(x, y):
 
 
 def sample_word(vec):
+    print("sample_word(vec):vec.shape : "+str(vec.shape))
     # Obtain candidates using word2vec
     cs = word2vec_coder.get_words(vec[:-3], num_words=3)
 
@@ -683,8 +688,8 @@ def train_lstm(
         # decaying learning rate).
         encoder='lstm',
         saveto='lstm_model.npz',  # The best model will be saved there
-        valid_freq=1,  # Compute the validation error after this number of update.
-        save_freq=3,  # Save the parameters after every save_freq updates
+        valid_freq=3,  # Compute the validation error after this number of update.
+        save_freq=4,  # Save the parameters after every save_freq updates
         maxlen=100,  # Sequence longer then this get ignored
         batch_size=64,  # The batch size during training.
         valid_batch_size=16,  # The batch size used for validation/test set.
@@ -698,7 +703,7 @@ def train_lstm(
         ydim=303,  # Output dimensions (300 for w2v + 3)
         w_multiplier=1,
         b_multiplier=1,
-        example_freq=100,
+        example_freq=1,
         inpdim=5,
         sample_temperature=0.33,
 ):
@@ -831,9 +836,12 @@ def train_lstm(
 
                     print(preds.shape)
                     # TxNxD
-                    targets = y.transpose()
+                    #targets = y
+                    targets = y.transpose([1,0,2])
+                    print("targets.shape() : "+str(targets.shape))
 
                     k = int(numpy.random.rand() * len(targets))
+                    print("some_target.shape() : "+str(targets[k].shape))
 
                     print("Targets for x=", x[0][k])
                     print(''.join([sample_word(o) + ' ' for o in targets[k].tolist()]))
