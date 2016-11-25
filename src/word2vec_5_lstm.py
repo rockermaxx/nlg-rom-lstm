@@ -847,13 +847,16 @@ def train_lstm(
 
                     k = int(numpy.random.rand() * len(targets))
 
-                    print("Targets for x=", x[0][k])
-                    print(''.join([sample_word(o) + ' ' for o in targets[k].tolist()]))
-                    print("Prediction ")
-                    print(''.join([sample_word(o) + ' ' for o in preds[k].tolist()]))
+                    print( "Targets for x=", x[0][k] );
+                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
+                    print( ''.join(ref) )
+                    print( "Prediction " );
+                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
+                    print( ''.join(hyp) )
                     sent_bleu,gram_bleu = bleu_scores(ref,hyp)
                     print(sent_bleu)
                     print(gram_bleu)
+
 
                 if saveto and numpy.mod(uidx, save_freq) == 0:
                     print('Saving...')
