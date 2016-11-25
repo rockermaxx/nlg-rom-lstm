@@ -17,8 +17,11 @@ from theano import config
 #from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano.tensor.shared_randomstreams import RandomStreams
 
-import encoder_decoder
+import old_encoder_decoder as encoder_decoder
 import nltk.translate.bleu_score as bleu
+import pickle
+
+corpus_data = pickle.load(open('../data/Corpus.pkl'))
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -520,7 +523,7 @@ def build_model(tparams, options):
     # TxN int64
     y = tensor.matrix('y', dtype='int64')
     # MxW float( Read Only Memory )
-    memory = tensor.matrix('memory', dtype=config.floatX)
+    #memory = tensor.matrix('memory', dtype=config.floatX)
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
@@ -534,7 +537,7 @@ def build_model(tparams, options):
     # TxNxH.
     proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
-                                            mask=mask,memory=memory)
+                                            mask=mask)
 
     # TxNx(X+W) float( for training ) OR TxNxX float( for prediction )
     x2 = tensor.tensor3('x_2', dtype=config.floatX)
@@ -544,7 +547,7 @@ def build_model(tparams, options):
     spass = get_layer(options['encoder'])[2](tparams, x2, options,
                                             prefix=options['encoder'],
                                             mask=mask2,
-                                            trng=trng,memory=memory)
+                                            trng=trng)
 
     #w = trng.multinomial( pvals=w );
     # TODO(biteandbytes) : Modify this ?
@@ -571,10 +574,10 @@ def build_model(tparams, options):
     # TxNxO ( last dimension softmaxed )
     pred = exp_pred / exp_pred.sum( axis=2, keepdims=True );
 
-    f_pred_prob = theano.function([x, mask, memory], pred, name='f_pred_prob')
+    f_pred_prob = theano.function([x, mask], pred, name='f_pred_prob')
     theano.config.exception_verbosity='high'
     #x_2 =
-    f_pred = theano.function([x2, mask2, memory], spass.argmax(axis=2), name='f_pred')
+    f_pred = theano.function([x2, mask2], spass.argmax(axis=2), name='f_pred')
 
     off = 1e-8
     if pred.dtype == 'float16':
@@ -583,7 +586,7 @@ def build_model(tparams, options):
     # NOTE: Finished adding the softmax layer with mask.
     cost = -tensor.log( pred[ tensor.arange(pred.shape[0])[:,None], tensor.arange(pred.shape[1])[None,:], y ] * mask + off ).sum()
 
-    return use_noise, x, mask, y, memory, f_pred_prob, f_pred, cost
+    return use_noise, x, mask, y, f_pred_prob, f_pred, cost
 
 
 def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
@@ -648,6 +651,14 @@ def reattach_data( x, y, inpsize=22 ):
     # TxNx(X+W)
     return numpy.concatenate( (x, x_part), axis=2 );
 
+def bleu_scores(ref, hyp, n=1):
+    #n-gram scores for translation
+    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    # Grammar scores for hypothesis TRI_GRAM
+    grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
+
+    return translation_bleu, grammar_bleu
+
 def train_lstm(
         dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
@@ -672,18 +683,19 @@ def train_lstm(
         # This frequently need a bigger model.
         reload_model=None,  # Path to a saved model we want to start from.
         test_size=-1,  # If >0, we keep only this number of test example.
-        ydim=187, # Output dimensions.
+        ydim=42, # Output dimensions.
         w_multiplier=1,
         b_multiplier=1,
         exampleFreq=100,
         inpdim=5,
         sample_temperature=0.33,
+        stats="stats2.txt"
 ):
     x_size = inpdim + ydim;
     # Model options
     model_options = locals().copy()
     print("model options", model_options)
-
+    stats_file = open( stats, 'w' );
     print('Loading data')
 
     # (N*[x], N*[y])
@@ -762,8 +774,11 @@ def train_lstm(
     start_time = time.time()
     try:
         for eidx in range(max_epochs):
+            num = 1;
+            avg_sent = 0;
+            avg_gram = 0;
             n_samples = 0
-
+            avg_cost = 0;
             # Get new shuffled index for the training set.
             kf = get_minibatches_idx(len(train[0]), batch_size, shuffle=True)
 
@@ -782,11 +797,7 @@ def train_lstm(
                 # x = TxNx3 float16
                 # m = TxN boolean
                 # y = TxN int64
-<<<<<<< HEAD
-                x, mask, y, memory = prepare_data(x, y, x_dim=inpdim, mapping=vocab)
-=======
                 x, mask, y = prepare_data(x, y, xdim = inpdim)
->>>>>>> 8f1bb5b83dbbf9918d1f6aee89095eb45f99772a
                 n_samples += x.shape[1]
                 # Sample.
                 #print("SAMPLE MASK");
@@ -794,7 +805,8 @@ def train_lstm(
                 # x = TxNx(22+5)
                 x = reattach_data( x, y, inpsize = ydim );
 
-                cost = f_grad_shared(x, mask, y.astype(numpy.int64), memory)
+                cost = f_grad_shared(x, mask, y.astype(numpy.int64) )
+                avg_cost += cost;
                 f_update(lrate)
 
                 if numpy.isnan(cost) or numpy.isinf(cost):
@@ -805,32 +817,48 @@ def train_lstm(
                     print('Epoch ', eidx, 'Update ', uidx, 'Cost ', cost)
 
                 if numpy.mod(uidx, exampleFreq) == 0:
+                    num = 1;
+                    avg_sent = 0;
+                    avg_gram = 0;
 
                     example_index = example_test_batch;
-                    x, mask, y, memory = prepare_data([test[0][t] for t in example_index],
+                    x, mask, y = prepare_data([test[0][t] for t in example_index],
                                   numpy.array(test[1])[example_index],
-<<<<<<< HEAD
-                                  maxlen=None, x_dim = inpdim, mapping=vocab)
-=======
                                   maxlen=None, xdim = inpdim)
->>>>>>> 8f1bb5b83dbbf9918d1f6aee89095eb45f99772a
 
                     # Predict.. don't have to call reattach.
-                    # TxN
-                    preds = f_pred(x, mask, memory).transpose().astype(numpy.int64);
+                    # Nx3xT
+                    preds = numpy.zeros(( 3, x.shape[1], x.shape[0] ))
+                    for i in range(0,3):
+                        preds[i] = f_pred(x, mask).transpose().astype(numpy.int64);
+                    preds = preds.transpose([1,0,2]).astype(numpy.int64);
+
                     # TxN
                     targets = y.transpose().astype(numpy.int64);
 
                     k = int( numpy.random.rand() * len(targets) );
 
-                    print( "Targets for x=", x[0][k] );
-                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
-                    print( ''.join(ref) )
-                    print( "Prediction " );
-                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
-                    print( ''.join(hyp) )
-                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))       #Corresponds to Bi-gram scores
-                    print( scores_prediction )
+                    for a,b,c in zip( x[0], targets, preds ):
+                        #print( "Targets for x=", a );
+                        print("\n\nTarget= ");
+                        ref = [ vocab_lst[o] + ' ' for o in b.tolist() ]
+                        print( ''.join(ref) )
+                        #print( "Targets for x=", a );
+                        #print( ''.join([ vocab_lst[o] + ' ' for o in b.tolist() ] ) )
+                        for p in c:
+                            #print( "Prediction " );
+                            hyp = [ vocab_lst[o] + ' ' for o in p.tolist() ]
+                            print( "Prediction " );
+                            print( ''.join(hyp) );
+                            sent_bleu,gram_bleu = bleu_scores(ref,hyp)
+                            num += 1;
+                            avg_sent += sent_bleu;
+                            avg_gram += gram_bleu;
+                            print("SENT BLEU: " + format( sent_bleu ) )
+                            print("GRAM BLEU: " + format( gram_bleu ) )
+
+                    print("Avg. SBLEU: " + format( avg_sent/num ) );
+                    print("Avg. GBLEU: " + format( avg_gram/num ) );
 
 
 
@@ -872,7 +900,9 @@ def train_lstm(
                     #        break
 
             print('Seen %d samples' % n_samples)
-
+            #print('Seen %d samples' % n_samples)
+            print('Avg. Cost %f' % (avg_cost/len(train[0]) ) )
+            stats_file.write('%f %f %f\n' % ( avg_cost/len(train[0]), avg_sent/num, avg_gram/num ) )
             if estop:
                 break
 

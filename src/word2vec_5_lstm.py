@@ -13,6 +13,9 @@ from theano.tensor.shared_randomstreams import RandomStreams
 
 import word2vec_coder
 import nltk.translate.bleu_score as bleu
+import pickle
+
+corpus_data = pickle.load(open('../data/Corpus.pkl'))
 
 # datasets = {'imdb': (imdb.load_data, imdb.prepare_data)}
 
@@ -162,8 +165,9 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
         n_samples = 1
 
     assert mask is not None
-    def sigmoid(x):
-        return 1./(1. + exp(x))
+
+    def _sigmoid(x):
+        return 1. / (1 + numpy.exp(x))
 
     # Dims
     # m_ : N
@@ -176,42 +180,61 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # NOTE(bitesandbytes): WHY THE CHANGE IN CONVENTION? Always keep N and T on top.
     # Becomes extremely confusing especially when the rest of the code is N major.
     def _step_2(m_, x_, h_, c_, w_):
+        print("tparams['weight'].size : " + str(tparams['weight'].shape))
+        # 4xHx(W+X+H)
+        wts = tparams['weight'].eval()
+        # 4x(W+X+H)xH
+        wts = numpy.transpose(wts, [0, 2, 1])
+
+        # 4xH
+        bias = tparams['bias'].eval()
+
+        print("wts.size : " + str(wts.shape))
         # Concat x_, h_ and w_ to get Nx(X+D+H) matrix
         ip_mat = numpy.concatenate([x_, w_, h_], axis=1)
+        print("ip_mat.size" + str(ip_mat.shape))
 
         # Compute forget gate values
         # f : NxH matrix
-        f = sigmoid(numpy.dot(ip_mat, tparams['weight'][0], axes=[1, 1]) + tparams['bias'][0, :][None, :])
+        f = _sigmoid(numpy.dot(ip_mat, wts[0]) + bias[0])
+        print("f.size" + str(f.shape))
         # f = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][0, :, :], ip_mat) + tparams['bias'][0, :][:, None])
 
         # Compute input gate values
         # i : NxH matrix
-        i = sigmoid(numpy.dot(ip_mat, tparams['weight'][1], axes=[1, 1]) + tparams['bias'][1, :][None, :])
+        # NOTE : Removed axes=[1, 1]; doesn't exist in numpy
+        i = _sigmoid(numpy.dot(ip_mat, wts[1]) + bias[1])
+        print("i.size" + str(i.shape))
         # i = tensor.nnet.sigmoid(tensor.dot(tparams['weight'][1, :, :], ip_mat) + tparams['bias'][1, :][:, None])
 
         # c_new : NxH matrix
-        c_new = numpy.tanh(numpy.dot(ip_mat, tparams['weight'][2], axes=[1, 1]) + tparams['bias'][2, :][None, :])
+        c_new = numpy.tanh(numpy.dot(ip_mat, wts[2]) + bias[2])
+        print("c_new.size" + str(c_new.shape))
         # c_new = tensor.tanh(tensor.dot(tparams['weight'][2, :, :], ip_mat) + tparams['bias'][2, :][:, None])
 
         # Compute new memory
         # c : NxH
         c = i * c_new + f * c_
+        print("c.size" + str(c.shape))
         # Retain based on mask
         c = m_[:, None] * c + (1. - m_)[:, None] * c_
+        print("c.size" + str(c.shape))
 
         # Compute new hidden state
         # h : NxH
-        h = sigmoid(numpy.dot(ip_mat, tparams['weight'][3], axes=[1, 1]) + tparams['bias'][3, :][None, :]) * numpy.tanh(
-            c)
+        h = _sigmoid(numpy.dot(ip_mat, wts[3]) + bias[3]) * numpy.tanh(c)
+        print("h.size" + str(h.shape))
         # h = tensor.nnet.sigmoid(
         #    tensor.dot(tparams['weight'][3, :, :], ip_mat) + tparams['bias'][3, :][:, None]) * tensor.tanh(c)
         # Retain based on mask
         h = m_[:, None] * h + (1. - m_)[:, None] * h_
+        print("h.size" + str(h.shape))
 
         # Predict next vector here.
         # U = DxH.
         # B = D.
-        proj = numpy.dot(h, tparams['U'], axes=[1, 1]) + tparams['b'][None, :]
+        proj = numpy.dot(h, numpy.transpose(tparams['U'].eval(), [1, 0])) + tparams['b'][None, :].eval()
+        print("proj.size" + str(proj.shape))
 
         # Not used for word2vec implementations
         # pred = NxD
@@ -257,7 +280,7 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
     # state_below = trng.multinomial(pvals=state_below);
     dim_proj = options['dim_proj']
     word_size = options['ydim']
-    print("nsteps=%0.4f, n_samples=%0.4f, word_size = %0.4f" % (nsteps, n_samples, word_size))
+    # print("nsteps=%0.4f, n_samples=%0.4f, word_size = %0.4f" % (nsteps, n_samples, word_size))
 
     op_sentences = numpy.zeros((nsteps, n_samples, word_size))
     prev_h = numpy.zeros((n_samples, dim_proj))
@@ -273,7 +296,6 @@ def lstm_spass(tparams, state_below, options, prefix='lstm', mask=None, trng=Non
 
     # Return the words.
     return op_sentences
-
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
     nsteps = state_below.shape[0]
@@ -518,7 +540,7 @@ def build_model(tparams, options):
     # TxN float( logically boolean )
     mask = tensor.matrix('mask', dtype=config.floatX)
     # TxNxD float
-    y = tensor.matrix('y', dtype=config.floatX)
+    y = tensor.tensor3('y', dtype=config.floatX)
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
@@ -532,16 +554,6 @@ def build_model(tparams, options):
     proj = get_layer(options['encoder'])[1](tparams, x, options,
                                             prefix=options['encoder'],
                                             mask=mask)
-
-    # TxNx(X+D) float( for training ) OR TxNxX float( for prediction )
-    x2 = tensor.tensor3('x_2', dtype=config.floatX)
-    # TxN float( logically boolean )
-    mask2 = tensor.matrix('mask_2', dtype=config.floatX)
-    # Stochastic forward pass.
-    spass = get_layer(options['encoder'])[2](tparams, x2, options,
-                                             prefix=options['encoder'],
-                                             mask=mask2,
-                                             trng=trng)
 
     # w = trng.multinomial( pvals=w );
     # tparams[U] = HxO # WRONG. It's _'OxH'_
@@ -564,8 +576,6 @@ def build_model(tparams, options):
 
     f_pred_prob = theano.function([x, mask], proj, name='f_pred_prob')
     theano.config.exception_verbosity = 'high'
-    # x_2 =
-    f_pred = theano.function([x2, mask2], spass.argmax(axis=2), name='f_pred')
 
     off = 1e-8
     if proj.dtype == 'float16':
@@ -576,16 +586,16 @@ def build_model(tparams, options):
     d_ij = y * proj
     # 2. Compute norms for both tensors
     # *_norms = TxN
-    y_norms = tensor.norm(y, axis=2)
-    proj_norms = tensor.norm(y, axis=2)
+    y_norms = y.norm(2, axis=2)
+    proj_norms = proj.norm(2, axis=2)
     # Compute cosine sim
     # cos_sim = TxN
-    cos_sim = d_ij / (y_norms * proj_norms)
+    cos_sim = d_ij.sum(axis=2) / (y_norms * proj_norms + 0.01)
     # Multiply by mask
     # cost = 1x1
     cost = -1 * ((cos_sim * mask).sum())
 
-    return use_noise, x, mask, y, f_pred_prob, f_pred, cost
+    return use_noise, x, mask, y, f_pred_prob, cost
 
 
 def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
@@ -649,12 +659,34 @@ def reattach_data(x, y):
     # TxNx(X+D)
     return numpy.concatenate((x, y), axis=2)
 
+def bleu_scores(ref, hyp, n=1):
+    #n-gram scores for translation
+    translation_bleu = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(float(1)/n,float(1)/n,float(1)/n,float(1)/n))
+    # Grammar scores for hypothesis TRI_GRAM
+    grammar_bleu = bleu.sentence_bleu(corpus_data,''.join(hyp).split(), weights=(0.33,0.33,0.33,0.33))
+
+    return translation_bleu, grammar_bleu
+
+
+def sample_word(vec):
+    # Obtain candidates using word2vec
+    cs = word2vec_coder.get_words(vec[:-3], num_words=3)
+
+    # Obtain scores
+    scores = numpy.asarray([x[1] for x in cs])
+
+    # Decay scores exponentially
+    scores = numpy.exp(-scores ** 2).append(vec[-3:].tolist())
+    selected = numpy.random.choice([c[0] for c in cs].append(["<comma>", "<eos>", "<eop>"]), 1, p=scores)
+
+    return selected
+
 
 def train_lstm(
         dim_proj=128,  # word embeding dimension and LSTM number of hidden units.
         patience=10,  # Number of epoch to wait before early stop if no progress
         max_epochs=10000,  # The maximum number of epoch to run
-        disp_freq=10,  # Display to stdout the training progress every N updates
+        disp_freq=1,  # Display to stdout the training progress every N updates
         decay_c=0.,  # Weight decay for the classifier applied to the U weights.
         lrate=0.00005,  # Learning rate for sgd (not used for adadelta and rmsprop)
         n_words=303,  # Vocabulary size
@@ -663,8 +695,8 @@ def train_lstm(
         # decaying learning rate).
         encoder='lstm',
         saveto='lstm_model.npz',  # The best model will be saved there
-        valid_freq=1000,  # Compute the validation error after this number of update.
-        save_freq=3000,  # Save the parameters after every save_freq updates
+        valid_freq=1,  # Compute the validation error after this number of update.
+        save_freq=3,  # Save the parameters after every save_freq updates
         maxlen=100,  # Sequence longer then this get ignored
         batch_size=64,  # The batch size during training.
         valid_batch_size=16,  # The batch size used for validation/test set.
@@ -715,7 +747,7 @@ def train_lstm(
 
     # use_noise is for dropout
     (use_noise, x, mask,
-     y, f_pred_prob, f_pred, cost) = build_model(tparams, model_options)
+     y, f_pred_prob, cost) = build_model(tparams, model_options)
 
     if decay_c > 0.:
         decay_c = theano.shared(numpy_floatX(decay_c), name='decay_c')
@@ -805,21 +837,26 @@ def train_lstm(
                                               maxlen=None, x_dim=inpdim)
 
                     # Predict.. don't have to call reattach.
-                    # TxNxD
-                    preds = f_pred(x, mask).transpose()
+                    # TxN
+                    print(x.shape)
+                    preds = lstm_spass(tparams, x, model_options, mask=mask)
+
+                    print(preds.shape)
                     # TxNxD
                     targets = y.transpose()
 
                     k = int(numpy.random.rand() * len(targets))
 
                     print( "Targets for x=", x[0][k] );
-                    ref = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in targets[k].tolist() ]
+                    ref = [ vocab_lst[o] + ' ' for o in targets[k].tolist() ]
                     print( ''.join(ref) )
                     print( "Prediction " );
-                    hyp = [ word2vec_coder.get_words(numpy.asarray(o), num_words=1)[0] + ' ' for o in preds[k].tolist() ]
+                    hyp = [ vocab_lst[o] + ' ' for o in preds[k].tolist() ]
                     print( ''.join(hyp) )
-                    scores_prediction = bleu.sentence_bleu(''.join(ref).split(),''.join(hyp).split(), weights=(0.5,0.5,0.5,0.5))  #Bi-Gram BLEU Score     #Corresponds to Bi-gram scores
-                    print( scores_prediction )
+                    sent_bleu,gram_bleu = bleu_scores(ref,hyp)
+                    print(sent_bleu)
+                    print(gram_bleu)
+
 
                 if saveto and numpy.mod(uidx, save_freq) == 0:
                     print('Saving...')
@@ -834,10 +871,13 @@ def train_lstm(
 
                 if numpy.mod(uidx, valid_freq) == 0:
                     use_noise.set_value(0.)
-                    train_err = pred_error(f_pred, prepare_data, train, kf)
-                    valid_err = pred_error(f_pred, prepare_data, valid,
+                    train_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk),
+                                           prepare_data, train, kf)
+                    valid_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk),
+                                           prepare_data, valid,
                                            kf_valid)
-                    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+                    test_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk),
+                                          prepare_data, test, kf_test)
 
                     history_errs.append([valid_err, test_err])
 
@@ -872,9 +912,11 @@ def train_lstm(
 
     use_noise.set_value(0.)
     kf_train_sorted = get_minibatches_idx(len(train[0]), batch_size)
-    train_err = pred_error(f_pred, prepare_data, train, kf_train_sorted)
-    valid_err = pred_error(f_pred, prepare_data, valid, kf_valid)
-    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+    train_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk), prepare_data, train,
+                           kf_train_sorted)
+    valid_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk), prepare_data, valid,
+                           kf_valid)
+    test_err = pred_error(lambda xs, msk: lstm_spass(tparams, xs, model_options, mask=msk), prepare_data, test, kf_test)
 
     print('Train ', train_err, 'Valid ', valid_err, 'Test ', test_err)
     if saveto:
