@@ -44,9 +44,21 @@ This LSTM initialises the initial cell state with a simple perceptron to transfo
 This LSTM uses a Memory matrix composed of the word forms of the inputs. The LSTM is optionally allowed to _optionally_ select an _input semantic_ instead of an arbitrary one-hot word output.
 This allows for good generalisation on the Prodigy-METEO dataset as the parts of the output text that is simply copy-pasted _input_ are effectively handled.
 
-
 ## Word2Vec LSTM
 The Word2Vec LSTM resembles the RILM-LSTM in everything except the output sampling method and the loss function.
 - The new loss function is the total vector dot product of the expectations with their corresponding targets.
 - The output sampling is performed by using Word2Vec's K similar vectors search based on the expectation and then sampling using the similarity scores.
+
+## Prodigy-METEO dataset analysis
+![prodigy-example.png](/prodigy-example.png)
+## Memory Attention Heatmap (Proof of Memory Hypothesis)
+![memory-attention.png](/memory-attention.png)
+
+## Examples
+### ROM-LSTM on Prodigy METEO
+![rom-eg-end.png](/rom-eg-end.png)
+### RILM-LSTM on Synthetic Weather Forcast dataset.
+![rilm-eg-end.png](/rilm-eg-end.png)
+
+
 
