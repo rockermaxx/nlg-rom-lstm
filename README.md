@@ -22,7 +22,7 @@ Combines a read-only variant of memory-networks with RILM-LSTM to allow the netw
 Combines dense representations of Word2Vec with RILM-LSTM to address scalability and variability issues with the model.
 
 ## RI-LSTM
-![]({{site.baseurl}}/images/ri_lstm.png)
+![](/images/ri_lstm.png)
 The set of raw inputs are provided to the LSTM at every stage (the same inputs) along with the previous hidden and cell states. This allows the LSTM to learn an input conditional language model.
 
 ## Running Input Language Model LSTM
