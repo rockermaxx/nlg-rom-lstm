@@ -26,17 +26,17 @@ Combines dense representations of Word2Vec with RILM-LSTM to address scalability
 The set of raw inputs are provided to the LSTM at every stage (the same inputs) along with the previous hidden and cell states. This allows the LSTM to learn an input conditional language model.
 
 ## Running Input Language Model LSTM
-![]({{site.baseurl}}/images/lm_lstm_train.png)
-![]({{site.baseurl}}/images/lm_lstm_test.png)
+![](/images/lm_lstm_train.png)
+![](/images/lm_lstm_test.png)
 In the Language Model part, we pass the previous word as an input to the current stage of the LSTM so that it knows which path has been sampled. This is important to allow the LSTM to handle ambuiguous phrases. See the full report for more details.
 
 ## Input Initialized LM-LSTM
-![]({{site.baseurl}}/images/ii_lstm1.png)
+![](/images/ii_lstm1.png)
 This LSTM initialises the initial cell state with a simple perceptron to transform the input to it's cell state. This part is the input network and can have different structure depending on the nature of inputs. CNNs for images, LSTMs for sequences and standard neural networks for low dimensional parameters.
 
 ## Read Only Memory (Copy/Paste) LSTM
-![]({{site.baseurl}}/images/rilm_train.png)
-![]({{site.baseurl}}/images/rilm_test.png)
+![](/images/rilm_train.png)
+![](/images/rilm_test.png)
 This LSTM uses a Memory matrix composed of the word forms of the inputs. The LSTM is optionally allowed to _optionally_ select an _input semantic_ instead of an arbitrary one-hot word output.
 This allows for good generalisation on the Prodigy-METEO dataset as the parts of the output text that is simply copy-pasted _input_ are effectively handled.
 
